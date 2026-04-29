@@ -1,8 +1,9 @@
 import type * as acp from "@agentclientprotocol/sdk";
 import fs from "node:fs";
 import path from "node:path";
-import {afterEach, beforeEach, expect, it} from "vitest";
+import {afterEach, beforeEach, describe, expect, it} from "vitest";
 import {McpApprovalOptionId, type McpApprovalOptionId as McpApprovalOptionIdValue} from "../../../McpApprovalOptionId";
+import {ApprovalOptionId} from "../../../ApprovalOptionId";
 import {
     createAuthenticatedFixture,
     describeE2E,
@@ -14,6 +15,7 @@ import os from "node:os";
 
 const MCP_SERVER_NAME = "integration-mcp";
 const MCP_ECHO_MESSAGE = "mcp approval e2e";
+const MCP_ECHO_PROMPT = `Use the ${MCP_SERVER_NAME} MCP echo tool with message "${MCP_ECHO_MESSAGE}". Reply with exactly the tool result and no extra text.`;
 
 function createMcpServer(invocationMarkerPath: string): acp.McpServerStdio {
     return {
@@ -61,6 +63,12 @@ function expectMcpPermissionRequestCount(fixture: SpawnedAgentFixture, sessionId
     for (const request of requests) {
         expect(isMcpPermissionRequest(request)).toBe(true);
     }
+}
+
+function failingPermissionResponder(label: string): PermissionResponder {
+    return (request) => {
+        throw new Error(`${label}: unexpected permission request (kind=${request.toolCall.kind})`);
+    };
 }
 
 describeE2E("E2E MCP approval tests (configured in session)", () => {
@@ -187,5 +195,98 @@ describeE2E("E2E MCP approval tests (configured in toml)", () => {
 
         expect(fs.readFileSync(invocationMarkerPath, "utf8")).toBe("always approval second");
         expect(fixture.readPermissionRequests(newSessionId, "execute").length).toBe(0);
+    });
+
+    describe("persisted approvals", () => {
+        let beforeRestartFixture: SpawnedAgentFixture | null = null;
+        let afterRestartFixture: SpawnedAgentFixture | null = null;
+
+        beforeEach(async () => {
+            // The outer beforeEach already created `fixture` without a config-backed MCP server.
+            // Persistence tests need the server in config.toml so Codex offers "Always allow",
+            // so dispose that fixture and replace it with a config-backed one.
+            await fixture.dispose();
+            beforeRestartFixture = await createAuthenticatedFixture({
+                configBackedMcpServers: [createMcpServer()],
+            });
+            fixture = beforeRestartFixture;
+            sessionId = (await fixture.createSession()).sessionId;
+        });
+
+        afterEach(async () => {
+            await afterRestartFixture?.dispose();
+            afterRestartFixture = null;
+            beforeRestartFixture = null;
+        });
+
+        it("does not re-prompt across agent restart when user picks Always allow", async () => {
+            fixture.setPermissionResponder(createMcpPermissionResponder(ApprovalOptionId.AllowPersist));
+
+            await fixture.expectPromptText(
+                sessionId,
+                MCP_ECHO_PROMPT,
+                (text) => expect(text).toContain(`You said: ${MCP_ECHO_MESSAGE}`),
+            );
+
+            const requests = fixture.readPermissionRequests(sessionId, "execute");
+            expect(requests.length).toBe(1);
+            expect(isMcpPermissionRequest(requests[0]!)).toBe(true);
+            const optionIds = requests[0]!.options.map((option) => option.optionId);
+            expect(optionIds).toContain(ApprovalOptionId.AllowPersist);
+
+            afterRestartFixture = await fixture.restart();
+            // `fixture` is now stopped; route all subsequent calls through afterRestartFixture.
+            fixture = afterRestartFixture;
+            afterRestartFixture.setPermissionResponder(failingPermissionResponder("after restart"));
+            const resumedSessionId = (await afterRestartFixture.createSession()).sessionId;
+
+            await afterRestartFixture.expectPromptText(
+                resumedSessionId,
+                MCP_ECHO_PROMPT,
+                (text) => expect(text).toContain(`You said: ${MCP_ECHO_MESSAGE}`),
+            );
+            expect(afterRestartFixture.readPermissionRequests(resumedSessionId, "execute").length).toBe(0);
+        });
+
+        it("does not re-prompt within a session when user picks Allow for session, but re-prompts after restart", async () => {
+            let approvalsGranted = 0;
+            fixture.setPermissionResponder((request) => {
+                if (!isMcpPermissionRequest(request)) {
+                    return createPermissionResponse(null);
+                }
+                approvalsGranted += 1;
+                if (approvalsGranted > 1) {
+                    throw new Error("Allow-for-session approval should be reused within the same session");
+                }
+                return createPermissionResponse(ApprovalOptionId.AllowForSession);
+            });
+
+            await fixture.expectPromptText(
+                sessionId,
+                MCP_ECHO_PROMPT,
+                (text) => expect(text).toContain(`You said: ${MCP_ECHO_MESSAGE}`),
+            );
+            expect(fixture.readPermissionRequests(sessionId, "execute").length).toBe(1);
+
+            await fixture.expectPromptText(
+                sessionId,
+                MCP_ECHO_PROMPT,
+                (text) => expect(text).toContain(`You said: ${MCP_ECHO_MESSAGE}`),
+            );
+            // Still just the one approval recorded - the second call reused the session-scoped grant.
+            expect(fixture.readPermissionRequests(sessionId, "execute").length).toBe(1);
+
+            afterRestartFixture = await fixture.restart();
+            fixture = afterRestartFixture;
+            afterRestartFixture.setPermissionResponder(createMcpPermissionResponder(ApprovalOptionId.AllowOnce));
+            const newSessionId = (await afterRestartFixture.createSession()).sessionId;
+
+            await afterRestartFixture.expectPromptText(
+                newSessionId,
+                MCP_ECHO_PROMPT,
+                (text) => expect(text).toContain(`You said: ${MCP_ECHO_MESSAGE}`),
+            );
+            expect(afterRestartFixture.readPermissionRequests(newSessionId, "execute").length).toBe(1);
+        });
     });
 });

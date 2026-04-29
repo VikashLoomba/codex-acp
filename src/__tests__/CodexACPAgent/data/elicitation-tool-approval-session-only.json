@@ -24,7 +24,9 @@
           }
         }
       },
-      "_meta": "_meta",
+      "_meta": {
+        "is_mcp_tool_approval": true
+      },
       "options": [
         {
           "optionId": "allow_once",
@@ -32,13 +34,13 @@
           "kind": "allow_once"
         },
         {
-          "optionId": "allow_session",
-          "name": "Allow for This Session",
+          "optionId": "allow_for_session",
+          "name": "Allow for this session",
           "kind": "allow_always"
         },
         {
-          "optionId": "decline",
-          "name": "Decline",
+          "optionId": "reject_once",
+          "name": "Cancel",
           "kind": "reject_once"
         }
       ]

@@ -4,7 +4,7 @@
     {
       "sessionId": "test-session-id",
       "toolCall": {
-        "toolCallId": "elicitation-tool-server",
+        "toolCallId": "item-network-policy",
         "kind": "execute",
         "status": "pending",
         "content": [
@@ -12,40 +12,31 @@
             "type": "content",
             "content": {
               "type": "text",
-              "text": "Allow tool call?"
+              "text": "Allow network access"
             }
           }
         ],
-        "rawInput": {
-          "serverName": "tool-server",
-          "schema": {
-            "type": "object",
-            "properties": {}
-          }
-        }
-      },
-      "_meta": {
-        "is_mcp_tool_approval": true
+        "rawInput": null
       },
       "options": [
         {
           "optionId": "allow_once",
-          "name": "Allow",
+          "name": "Yes, proceed",
           "kind": "allow_once"
         },
         {
           "optionId": "allow_for_session",
-          "name": "Allow for this session",
+          "name": "Yes, and don't ask again for this command in this session",
           "kind": "allow_always"
         },
         {
-          "optionId": "allow_persist",
-          "name": "Always allow",
+          "optionId": "apply_network_policy_amendment",
+          "name": "Yes, and allow this host in the future",
           "kind": "allow_always"
         },
         {
           "optionId": "reject_once",
-          "name": "Cancel",
+          "name": "No, and tell Codex what to do differently",
           "kind": "reject_once"
         }
       ]

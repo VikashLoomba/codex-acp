@@ -201,9 +201,10 @@ export class CodexAcpClient {
 
     async resumeSession(request: acp.ResumeSessionRequest): Promise<SessionMetadata> {
         await this.refreshSkills(request.cwd, request._meta);
+        const sessionConfig = await this.createSessionConfig(request.cwd, request.mcpServers ?? []);
 
         const response = await this.codexClient.threadResume({
-            config: await this.createSessionConfig(request.cwd, request.mcpServers ?? []),
+            config: sessionConfig.config,
             cwd: request.cwd,
             modelProvider: this.getResumeModelProvider(),
             threadId: request.sessionId,
@@ -215,12 +216,14 @@ export class CodexAcpClient {
             currentModelId: currentModelId,
             models: codexModels,
             currentServiceTier: response.serviceTier ?? null,
+            configBackedMcpServerNames: sessionConfig.configBackedMcpServerNames,
         }
     }
 
     async loadSession(request: acp.LoadSessionRequest): Promise<SessionMetadataWithThread> {
+        const sessionConfig = await this.createSessionConfig(request.cwd, request.mcpServers ?? []);
         const response = await this.codexClient.threadResume({
-            config: await this.createSessionConfig(request.cwd, request.mcpServers ?? []),
+            config: sessionConfig.config,
             cwd: request.cwd,
             modelProvider: this.getResumeModelProvider(),
             threadId: request.sessionId,
@@ -232,15 +235,17 @@ export class CodexAcpClient {
             currentModelId: currentModelId,
             models: codexModels,
             currentServiceTier: response.serviceTier ?? null,
+            configBackedMcpServerNames: sessionConfig.configBackedMcpServerNames,
             thread: response.thread,
         };
     }
 
     async newSession(request: acp.NewSessionRequest): Promise<SessionMetadata> {
         await this.refreshSkills(request.cwd, request._meta);
+        const sessionConfig = await this.createSessionConfig(request.cwd, request.mcpServers);
 
         const response = await this.codexClient.threadStart({
-            config: await this.createSessionConfig(request.cwd, request.mcpServers),
+            config: sessionConfig.config,
             modelProvider: this.getModelProvider(),
             cwd: request.cwd,
         });
@@ -255,6 +260,7 @@ export class CodexAcpClient {
             currentModelId: currentModelId,
             models: codexModels,
             currentServiceTier: response.serviceTier ?? null,
+            configBackedMcpServerNames: sessionConfig.configBackedMcpServerNames,
         };
     }
 
@@ -266,7 +272,7 @@ export class CodexAcpClient {
         return this.codexClient.getMcpServerStartupVersion();
     }
 
-    private async createSessionConfig(projectPath: string, mcpServers: Array<McpServer>): Promise<JsonObject> {
+    private async createSessionConfig(projectPath: string, mcpServers: Array<McpServer>): Promise<SessionConfig> {
         const mergedConfig = {
             ...mergeGatewayConfig(this.config, this.gatewayConfig),
             projects: {
@@ -275,21 +281,30 @@ export class CodexAcpClient {
                 }
             },
         };
+        const configuredMcpServerNames = await this.getConfigMcpServerNames(projectPath);
         if (mcpServers.length === 0) {
-            return mergedConfig;
+            return {
+                config: mergedConfig,
+                configBackedMcpServerNames: configuredMcpServerNames,
+            };
         }
 
         // Deduplicates new servers against existing config to prevent Codex from deep-merging
         // incompatible field types (e.g., mixing url and stdio schemas).
-        const existingNames = await this.getConfigMcpServerNames(projectPath);
-        const uniqueServers = mcpServers.filter(mcp => !existingNames.has(mcp.name));
+        const uniqueServers = mcpServers.filter(mcp => !configuredMcpServerNames.has(mcp.name));
         if (uniqueServers.length === 0) {
-            return mergedConfig;
+            return {
+                config: mergedConfig,
+                configBackedMcpServerNames: configuredMcpServerNames,
+            };
         }
 
         return {
-            ...mergedConfig,
-            "mcp_servers": Object.fromEntries(uniqueServers.map(mcp => [mcp.name, this.createMcpSeverConfig(mcp)])),
+            config: {
+                ...mergedConfig,
+                "mcp_servers": Object.fromEntries(uniqueServers.map(mcp => [mcp.name, this.createMcpSeverConfig(mcp)])),
+            },
+            configBackedMcpServerNames: configuredMcpServerNames,
         };
     }
 
@@ -569,10 +584,16 @@ export type SessionMetadata = {
     currentModelId: string,
     models: Model[],
     currentServiceTier?: ServiceTier | null,
+    configBackedMcpServerNames?: Set<string>,
 }
 
 export type SessionMetadataWithThread = SessionMetadata & {
     thread: Thread,
+}
+
+type SessionConfig = {
+    config: JsonObject,
+    configBackedMcpServerNames: Set<string>,
 }
 
 function buildPromptItems(prompt: acp.ContentBlock[]): UserInput[] {

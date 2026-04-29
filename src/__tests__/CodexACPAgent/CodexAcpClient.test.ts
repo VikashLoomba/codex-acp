@@ -81,6 +81,7 @@ describe('ACP server test', { timeout: 40_000 }, () => {
             "account/login/start",
             "account/read",
             "account/updated",
+            "config/read",
             "thread/start",
             "model/list",
             "thread/started",

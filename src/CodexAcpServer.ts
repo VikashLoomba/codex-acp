@@ -57,7 +57,8 @@ export interface SessionState {
     cwd: string;
     fastModeEnabled: boolean;
     currentModelSupportsFast: boolean;
-    sessionMcpServers?: Array<string>;
+    sessionMcpServers: Array<string>;
+    configBackedMcpServerNames?: Set<string>;
 }
 
 interface PendingMcpStartupSession {
@@ -126,7 +127,6 @@ export class CodexAcpServer implements acp.Agent {
                     list: { }
                 },
                 mcpCapabilities: {
-                    acp: false,
                     http: true,
                     sse: false
                 }
@@ -185,7 +185,6 @@ export class CodexAcpServer implements acp.Agent {
 
         const account = await this.getActiveAccount();
         const {sessionId, currentModelId, models} = sessionMetadata;
-        const sessionMcpServers = this.resolveSessionMcpServers(requestedMcpServers, "sessionId" in request);
         const currentModel = this.findCurrentModel(models, currentModelId);
         const currentModelSupportsFast = modelSupportsFast(currentModel);
         const sessionState: SessionState = {
@@ -203,7 +202,8 @@ export class CodexAcpServer implements acp.Agent {
             cwd: request.cwd,
             fastModeEnabled: sessionMetadata.currentServiceTier === "fast",
             currentModelSupportsFast: currentModelSupportsFast,
-            sessionMcpServers: sessionMcpServers,
+            sessionMcpServers: this.createSessionMcpServers(requestedMcpServers, "sessionId" in request),
+            configBackedMcpServerNames: sessionMetadata.configBackedMcpServerNames ?? new Set(),
         }
         this.sessions.set(sessionId, sessionState);
 
@@ -452,7 +452,6 @@ export class CodexAcpServer implements acp.Agent {
 
         const account = await this.getActiveAccount();
         const {sessionId, currentModelId, models, thread} = sessionMetadata;
-        const sessionMcpServers = this.resolveSessionMcpServers(requestedMcpServers, true);
         const currentModel = this.findCurrentModel(models, currentModelId);
         const currentModelSupportsFast = modelSupportsFast(currentModel);
         const sessionState: SessionState = {
@@ -470,7 +469,8 @@ export class CodexAcpServer implements acp.Agent {
             cwd: request.cwd,
             fastModeEnabled: sessionMetadata.currentServiceTier === "fast",
             currentModelSupportsFast: currentModelSupportsFast,
-            sessionMcpServers: sessionMcpServers,
+            sessionMcpServers: this.createSessionMcpServers(requestedMcpServers, true),
+            configBackedMcpServerNames: sessionMetadata.configBackedMcpServerNames ?? new Set(),
         };
         this.sessions.set(sessionId, sessionState);
 
@@ -724,14 +724,13 @@ export class CodexAcpServer implements acp.Agent {
         return sessionState;
     }
 
-    private resolveSessionMcpServers(
+    private createSessionMcpServers(
         mcpServers: Array<acp.McpServer>,
         recoverFromStartup: boolean,
     ): Array<string> {
         // Explicit MCP servers from the request are the primary source of truth for the session.
-        const requestedServerNames = getRequestedMcpServerNames(mcpServers);
-        if (requestedServerNames.length > 0) {
-            return requestedServerNames;
+        if (mcpServers.length > 0) {
+            return mcpServers.map(server => server.name);
         }
         // Fresh sessions without MCP config should not inherit any session MCP state.
         if (!recoverFromStartup) {
@@ -954,8 +953,4 @@ export class CodexAcpServer implements acp.Agent {
             logger.error(`Cancel - turnInterrupt failed`, err);
         }
     }
-}
-
-function getRequestedMcpServerNames(mcpServers: Array<acp.McpServer>): Array<string> {
-    return Array.from(new Set(mcpServers.map(server => server.name)));
 }

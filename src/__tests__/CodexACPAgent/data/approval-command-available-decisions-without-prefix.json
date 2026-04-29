@@ -4,7 +4,7 @@
     {
       "sessionId": "test-session-id",
       "toolCall": {
-        "toolCallId": "elicitation-tool-server",
+        "toolCallId": "item-no-prefix-rule",
         "kind": "execute",
         "status": "pending",
         "content": [
@@ -12,30 +12,21 @@
             "type": "content",
             "content": {
               "type": "text",
-              "text": "Allow tool call?"
+              "text": "Run exact command only"
             }
           }
         ],
-        "rawInput": {
-          "serverName": "tool-server",
-          "schema": {
-            "type": "object",
-            "properties": {}
-          }
-        }
-      },
-      "_meta": {
-        "is_mcp_tool_approval": true
+        "rawInput": null
       },
       "options": [
         {
           "optionId": "allow_once",
-          "name": "Allow",
+          "name": "Yes, proceed",
           "kind": "allow_once"
         },
         {
           "optionId": "reject_once",
-          "name": "Cancel",
+          "name": "No, and tell Codex what to do differently",
           "kind": "reject_once"
         }
       ]

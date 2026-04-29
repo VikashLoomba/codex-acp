@@ -1,6 +1,9 @@
 export const ApprovalOptionId = {
     AllowOnce: "allow_once",
-    AllowAlways: "allow_always",
+    AllowForSession: "allow_for_session",
+    AllowPersist: "allow_persist",
+    AllowCommandPrefixRule: "allow_command_prefix_rule",
+    ApplyNetworkPolicyAmendment: "apply_network_policy_amendment",
     RejectOnce: "reject_once",
 } as const;
 

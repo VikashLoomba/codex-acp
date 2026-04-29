@@ -33,12 +33,12 @@
       },
       "options": [
         {
-          "optionId": "accept",
+          "optionId": "allow_once",
           "name": "Accept",
           "kind": "allow_once"
         },
         {
-          "optionId": "decline",
+          "optionId": "reject_once",
           "name": "Decline",
           "kind": "reject_once"
         }

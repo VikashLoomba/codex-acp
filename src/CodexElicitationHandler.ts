@@ -9,15 +9,27 @@ import type {
     McpServerElicitationRequestResponse,
 } from "./app-server/v2";
 import { logger } from "./Logger";
-import { McpApprovalOptionId } from "./McpApprovalOptionId";
+import { ApprovalOptionId } from "./ApprovalOptionId";
 
 // Standard elicitation options (non-tool-call approval).
 const ELICITATION_OPTIONS: acp.PermissionOption[] = [
-    { optionId: "accept", name: "Accept", kind: "allow_once" },
-    { optionId: "decline", name: "Decline", kind: "reject_once" },
+    { optionId: ApprovalOptionId.AllowOnce, name: "Accept", kind: "allow_once" },
+    { optionId: ApprovalOptionId.RejectOnce, name: "Decline", kind: "reject_once" },
 ];
 
 type PersistValue = "session" | "always";
+
+function buildToolApprovalOption(
+    optionId: string,
+    name: string,
+    kind: acp.PermissionOption["kind"],
+): acp.PermissionOption {
+    return {
+        optionId,
+        name,
+        kind
+    };
+}
 
 /**
  * Parses the `persist` field from the elicitation request `_meta`.
@@ -49,19 +61,40 @@ function isMcpToolCallApproval(meta: unknown): boolean {
 
 /**
  * Builds the ACP permission options for an MCP tool call approval elicitation.
- * Always includes "Allow Once"; adds session/always persist options when advertised.
+ * Always includes "Allow"; adds session/persistent approval options when advertised.
  */
-function buildToolApprovalOptions(persistOptions: Set<PersistValue>): acp.PermissionOption[] {
+function buildToolApprovalOptions(
+    persistOptions: Set<PersistValue>,
+    allowPersistentApproval: boolean
+): acp.PermissionOption[] {
     const options: acp.PermissionOption[] = [
-        { optionId: McpApprovalOptionId.AllowOnce, name: "Allow", kind: "allow_once" },
+        buildToolApprovalOption(
+            ApprovalOptionId.AllowOnce,
+            "Allow",
+            "allow_once"
+        ),
     ];
+    // Codex advertises MCP tool approval persistence choices in request _meta.persist.
+    // Only surface scopes the server explicitly offered.
     if (persistOptions.has("session")) {
-        options.push({ optionId: McpApprovalOptionId.AllowSession, name: "Allow for This Session", kind: "allow_always" });
+        options.push(buildToolApprovalOption(
+            ApprovalOptionId.AllowForSession,
+            "Allow for this session",
+            "allow_always"
+        ));
     }
-    if (persistOptions.has("always")) {
-        options.push({ optionId: McpApprovalOptionId.AllowAlways, name: "Allow and Don't Ask Again", kind: "allow_always" });
+    if (persistOptions.has("always") && allowPersistentApproval) {
+        options.push(buildToolApprovalOption(
+            ApprovalOptionId.AllowPersist,
+            "Always allow",
+            "allow_always"
+        ));
     }
-    options.push({ optionId: McpApprovalOptionId.Decline, name: "Decline", kind: "reject_once" });
+    options.push(buildToolApprovalOption(
+        ApprovalOptionId.RejectOnce,
+        "Cancel",
+        "reject_once"
+    ));
     return options;
 }
 
@@ -114,14 +147,14 @@ export class CodexElicitationHandler implements ElicitationHandler {
             const response = await this.connection.requestPermission(request);
             if (correlatedCallId !== undefined && response.outcome.outcome !== "cancelled") {
                 const optionId = response.outcome.optionId;
-                if (optionId !== McpApprovalOptionId.Decline) {
+                if (optionId !== ApprovalOptionId.RejectOnce) {
                     await this.connection.sessionUpdate({
                         sessionId: this.sessionState.sessionId,
                         update: { sessionUpdate: "tool_call_update", toolCallId: correlatedCallId, status: "in_progress" },
                     });
                 }
             }
-            return this.convertResponse(response);
+            return await this.convertResponse(response);
         } catch (error) {
             logger.error("Error handling MCP elicitation request", error);
             return { action: "cancel", content: null, _meta: null };
@@ -140,7 +173,10 @@ export class CodexElicitationHandler implements ElicitationHandler {
         const meta = params._meta;
         const isToolApproval = isMcpToolCallApproval(meta);
         const options = isToolApproval
-            ? buildToolApprovalOptions(parsePersistOptions(meta))
+            ? buildToolApprovalOptions(
+                parsePersistOptions(meta),
+                this.serverSupportsPersistentApproval(params.serverName)
+            )
             : ELICITATION_OPTIONS;
 
         if (params.mode === "form") {
@@ -200,24 +236,32 @@ export class CodexElicitationHandler implements ElicitationHandler {
         }
     }
 
-    private convertResponse(
+    private async convertResponse(
         response: acp.RequestPermissionResponse
-    ): McpServerElicitationRequestResponse {
+    ): Promise<McpServerElicitationRequestResponse> {
         if (response.outcome.outcome === "cancelled") {
             return { action: "cancel", content: null, _meta: null };
         }
 
         const optionId = response.outcome.optionId;
-        if (optionId === McpApprovalOptionId.AllowSession) {
+        if (optionId === ApprovalOptionId.AllowForSession) {
+            // This _meta is part of Codex's MCP tool approval response contract.
+            // It tells app-server to remember this approval for the current session.
             return { action: "accept", content: null, _meta: { persist: "session" } };
         }
-        if (optionId === McpApprovalOptionId.AllowAlways) {
+        if (optionId === ApprovalOptionId.AllowPersist) {
+            // This _meta is part of Codex's MCP tool approval response contract.
+            // It tells app-server to persist this MCP tool approval across sessions.
             return { action: "accept", content: null, _meta: { persist: "always" } };
         }
-        if (optionId === McpApprovalOptionId.AllowOnce || optionId === "accept") {
+        if (optionId === ApprovalOptionId.AllowOnce) {
             return { action: "accept", content: null, _meta: null };
         }
         return { action: "decline", content: null, _meta: null };
+    }
+
+    private serverSupportsPersistentApproval(serverName: string): boolean {
+        return this.sessionState.configBackedMcpServerNames?.has(serverName) === true;
     }
 
     private handleItemStarted(event: ItemStartedNotification): void {

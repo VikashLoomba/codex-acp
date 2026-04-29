@@ -2,6 +2,7 @@ import * as acp from "@agentclientprotocol/sdk";
 import type {SessionState} from "./CodexAcpServer";
 import type {ApprovalHandler} from "./CodexAppServerClient";
 import type {
+    CommandExecutionApprovalDecision,
     CommandExecutionRequestApprovalParams,
     CommandExecutionRequestApprovalResponse,
     FileChangeRequestApprovalParams,
@@ -12,11 +13,13 @@ import {logger} from "./Logger";
 import {stripShellPrefix} from "./CodexEventHandler";
 import {ApprovalOptionId} from "./ApprovalOptionId";
 
-const APPROVAL_OPTIONS: acp.PermissionOption[] = [
-    { optionId: ApprovalOptionId.AllowOnce, name: "Allow Once", kind: "allow_once" },
-    { optionId: ApprovalOptionId.AllowAlways, name: "Allow for Session", kind: "allow_always" },
-    { optionId: ApprovalOptionId.RejectOnce, name: "Reject", kind: "reject_once" },
-];
+
+// Pair each displayed ACP option with the exact Codex decision it represents,
+// so response conversion does not reconstruct decisions from labels or metadata.
+type CommandDecisionOption = {
+    option: acp.PermissionOption;
+    decision: CommandExecutionApprovalDecision;
+};
 
 export class CodexApprovalHandler implements ApprovalHandler {
     private readonly connection: acp.AgentSideConnection;
@@ -37,7 +40,7 @@ export class CodexApprovalHandler implements ApprovalHandler {
             const sessionId = this.sessionState.sessionId;
             const acpRequest = this.buildCommandPermissionRequest(sessionId, params);
             const response = await this.connection.requestPermission(acpRequest);
-            return this.convertCommandResponse(response);
+            return this.convertCommandResponse(response, params);
         } catch (error) {
             logger.error("Error requesting command execution permission", error);
             return { decision: "cancel" };
@@ -72,8 +75,154 @@ export class CodexApprovalHandler implements ApprovalHandler {
                 content: reasonContent ? [reasonContent] : null,
                 rawInput: params.command ? { command: stripShellPrefix(params.command), cwd: params.cwd } : null,
             },
-            options: APPROVAL_OPTIONS,
+            options: this.buildCommandDecisionOptions(params).map(({ option }) => option),
         };
+    }
+
+    private buildCommandDecisionOptions(
+        params: CommandExecutionRequestApprovalParams
+    ): CommandDecisionOption[] {
+        const decisions = this.buildCommandDecisions(params);
+        let execAmendmentCount = 0;
+        let networkAmendmentCount = 0;
+
+        return decisions.map((decision) => {
+            let amendmentIndex = 0;
+            if (typeof decision !== "string" && "acceptWithExecpolicyAmendment" in decision) {
+                amendmentIndex = execAmendmentCount++;
+            } else if (typeof decision !== "string" && "applyNetworkPolicyAmendment" in decision) {
+                amendmentIndex = networkAmendmentCount++;
+            }
+            return this.convertCommandDecisionToOption(params, decision, amendmentIndex);
+        });
+    }
+
+    private buildCommandDecisions(
+        params: CommandExecutionRequestApprovalParams
+    ): CommandExecutionApprovalDecision[] {
+        const decisions: CommandExecutionApprovalDecision[] = ["accept", "acceptForSession"];
+
+        if (params.proposedExecpolicyAmendment) {
+            decisions.push({
+                acceptWithExecpolicyAmendment: {
+                    execpolicy_amendment: params.proposedExecpolicyAmendment
+                }
+            });
+        }
+
+        for (const amendment of params.proposedNetworkPolicyAmendments ?? []) {
+            decisions.push({
+                applyNetworkPolicyAmendment: {
+                    network_policy_amendment: amendment
+                }
+            });
+        }
+
+        decisions.push("decline");
+        return decisions;
+    }
+
+    private convertCommandDecisionToOption(
+        params: CommandExecutionRequestApprovalParams,
+        decision: CommandExecutionApprovalDecision,
+        amendmentIndex: number
+    ): CommandDecisionOption {
+        if (decision === "accept") {
+            return {
+                option: {
+                    optionId: ApprovalOptionId.AllowOnce,
+                    name: params.networkApprovalContext ? "Yes, just this once" : "Yes, proceed",
+                    kind: "allow_once"
+                },
+                decision
+            };
+        }
+
+        if (decision === "acceptForSession") {
+            return {
+                option: {
+                    optionId: ApprovalOptionId.AllowForSession,
+                    name: params.networkApprovalContext
+                        ? "Yes, and allow this host for this conversation"
+                        : "Yes, and don't ask again for this command in this session",
+                    kind: "allow_always"
+                },
+                decision
+            };
+        }
+
+        if (decision === "decline") {
+            return {
+                option: {
+                    optionId: ApprovalOptionId.RejectOnce,
+                    name: "No, and tell Codex what to do differently",
+                    kind: "reject_once"
+                },
+                decision
+            };
+        }
+
+        if (decision === "cancel") {
+            return {
+                option: {
+                    optionId: ApprovalOptionId.RejectOnce,
+                    name: "No, and tell Codex what to do differently",
+                    kind: "reject_once"
+                },
+                decision
+            };
+        }
+
+        if ("acceptWithExecpolicyAmendment" in decision) {
+            // This amendment corresponds to a Codex exec-policy
+            // `prefix_rule(..., decision="allow")`, not session-scoped approval.
+            return {
+                option: {
+                    optionId: this.indexedOptionId(ApprovalOptionId.AllowCommandPrefixRule, amendmentIndex),
+                    name: this.commandPrefixApprovalLabel(
+                        decision.acceptWithExecpolicyAmendment.execpolicy_amendment
+                    ),
+                    kind: "allow_always"
+                },
+                decision
+            };
+        }
+
+        return {
+            option: {
+                optionId: this.indexedOptionId(ApprovalOptionId.ApplyNetworkPolicyAmendment, amendmentIndex),
+                name: this.networkPolicyApprovalLabel(
+                    decision.applyNetworkPolicyAmendment.network_policy_amendment
+                ),
+                kind: decision.applyNetworkPolicyAmendment.network_policy_amendment.action === "deny"
+                    ? "reject_always"
+                    : "allow_always"
+            },
+            decision
+        };
+    }
+
+    private commandPrefixApprovalLabel(execpolicyAmendment: string[]): string {
+        const commandPrefix = execpolicyAmendment.join(" ");
+        if (commandPrefix === "") {
+            return "Yes, and don't ask again for similar commands";
+        }
+        return `Yes, and don't ask again for commands that start with \`${commandPrefix}\``;
+    }
+
+    private networkPolicyApprovalLabel(
+        amendment: { host: string; action: "allow" | "deny" }
+    ): string {
+        return amendment.action === "deny"
+            ? "No, and block this host in the future"
+            : "Yes, and allow this host in the future";
+    }
+
+    // ACP responses only return the selected optionId. The network field is
+    // plural, so repeated amendments need unique IDs while the common
+    // single-amendment ID stays stable.
+    private indexedOptionId(optionId: ApprovalOptionId, index: number): ApprovalOptionId | string {
+        return index === 0 ? optionId : `${optionId}:${index}`;
     }
 
     private createContentFromReason(reason: string | null): ToolCallContent | null {
@@ -102,25 +251,38 @@ export class CodexApprovalHandler implements ApprovalHandler {
                 status: "pending",
                 content: reasonContent ? [reasonContent] : null,
             },
-            options: APPROVAL_OPTIONS,
+            options: [
+                { optionId: ApprovalOptionId.AllowOnce, name: "Yes, proceed", kind: "allow_once" },
+                {
+                    optionId: ApprovalOptionId.AllowForSession,
+                    name: "Yes, and don't ask again for these files",
+                    kind: "allow_always"
+                },
+                {
+                    optionId: ApprovalOptionId.RejectOnce,
+                    name: "No, and tell Codex what to do differently",
+                    kind: "reject_once"
+                },
+            ],
         };
     }
 
     private convertCommandResponse(
-        response: acp.RequestPermissionResponse
+        response: acp.RequestPermissionResponse,
+        params: CommandExecutionRequestApprovalParams
     ): CommandExecutionRequestApprovalResponse {
         if (response.outcome.outcome === "cancelled") {
             return { decision: "cancel" };
         }
 
         const optionId = response.outcome.optionId;
-        if (optionId === ApprovalOptionId.AllowOnce) {
-            return { decision: "accept" };
-        } else if (optionId === ApprovalOptionId.AllowAlways) {
-            return { decision: "acceptForSession" };
-        } else {
-            return { decision: "decline" };
+        const selectedOption = this.buildCommandDecisionOptions(params)
+            .find(({ option }) => option.optionId === optionId);
+        if (selectedOption) {
+            return { decision: selectedOption.decision };
         }
+
+        return { decision: "decline" };
     }
 
     private convertFileChangeResponse(
@@ -133,7 +295,7 @@ export class CodexApprovalHandler implements ApprovalHandler {
         const optionId = response.outcome.optionId;
         if (optionId === ApprovalOptionId.AllowOnce) {
             return { decision: "accept" };
-        } else if (optionId === ApprovalOptionId.AllowAlways) {
+        } else if (optionId === ApprovalOptionId.AllowForSession) {
             return { decision: "acceptForSession" };
         } else {
             return { decision: "cancel" };

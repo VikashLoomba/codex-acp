@@ -8,6 +8,8 @@ import type {
 import type {
     ConfigReadParams,
     ConfigReadResponse,
+    ConfigBatchWriteParams,
+    ConfigWriteResponse,
     GetAccountParams,
     GetAccountResponse,
     ListMcpServerStatusParams,

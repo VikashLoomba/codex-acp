@@ -50,7 +50,7 @@ describe('Approval Events', () => {
     describe('Command execution approval', () => {
         const commandApprovalCases = [
             { optionId: 'allow_once', expectedDecision: 'accept', description: 'allow once' },
-            { optionId: 'allow_always', expectedDecision: 'acceptForSession', description: 'allow for session' },
+            { optionId: 'allow_for_session', expectedDecision: 'acceptForSession', description: 'allow for session' },
             { optionId: 'reject_once', expectedDecision: 'decline', description: 'reject' },
         ] as const;
 
@@ -102,6 +102,74 @@ describe('Approval Events', () => {
             );
 
             expect(response).toEqual({ decision: 'cancel' });
+
+            completeTurn();
+            await promptPromise;
+        });
+
+        it('should map execpolicy amendment approval to Codex decision', async () => {
+            const { promptPromise, completeTurn } = setupSessionWithPendingPrompt();
+            const execpolicyAmendment = ['npm', 'run'];
+            fixture.setPermissionResponse({
+                outcome: { outcome: 'selected', optionId: 'allow_command_prefix_rule' }
+            });
+
+            const params: CommandExecutionRequestApprovalParams = {
+                threadId: sessionId,
+                turnId: 'turn-1',
+                itemId: 'item-prefix-rule-fallback',
+                reason: 'Run npm script',
+                proposedExecpolicyAmendment: execpolicyAmendment,
+            };
+
+            const response = await fixture.sendServerRequest(
+                'item/commandExecution/requestApproval',
+                params
+            );
+
+            expect(response).toEqual({
+                decision: {
+                    acceptWithExecpolicyAmendment: {
+                        execpolicy_amendment: execpolicyAmendment,
+                    },
+                },
+            });
+
+            completeTurn();
+            await promptPromise;
+        });
+
+        it('should map network policy amendment approval to Codex decision', async () => {
+            const { promptPromise, completeTurn } = setupSessionWithPendingPrompt();
+            const networkPolicyAmendment = { host: 'registry.npmjs.org', action: 'allow' } as const;
+            fixture.setPermissionResponse({
+                outcome: { outcome: 'selected', optionId: 'apply_network_policy_amendment' }
+            });
+
+            const params: CommandExecutionRequestApprovalParams = {
+                threadId: sessionId,
+                turnId: 'turn-1',
+                itemId: 'item-network-policy',
+                reason: 'Allow network access',
+                proposedExecpolicyAmendment: null,
+                proposedNetworkPolicyAmendments: [networkPolicyAmendment],
+            };
+
+            const response = await fixture.sendServerRequest(
+                'item/commandExecution/requestApproval',
+                params
+            );
+
+            expect(response).toEqual({
+                decision: {
+                    applyNetworkPolicyAmendment: {
+                        network_policy_amendment: networkPolicyAmendment,
+                    },
+                },
+            });
+            await expect(fixture.getAcpConnectionDump(['_meta'])).toMatchFileSnapshot(
+                'data/approval-command-network-policy.json'
+            );
 
             completeTurn();
             await promptPromise;
@@ -221,7 +289,7 @@ describe('Approval Events', () => {
     describe('File change approval', () => {
         const fileChangeApprovalCases = [
             { optionId: 'allow_once', expectedDecision: 'accept', description: 'allow once' },
-            { optionId: 'allow_always', expectedDecision: 'acceptForSession', description: 'allow for session' },
+            { optionId: 'allow_for_session', expectedDecision: 'acceptForSession', description: 'allow for session' },
             { optionId: 'reject_once', expectedDecision: 'cancel', description: 'reject' },
         ] as const;
 

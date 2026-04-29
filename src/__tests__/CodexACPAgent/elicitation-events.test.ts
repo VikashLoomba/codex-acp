@@ -3,7 +3,6 @@ import type { McpServerElicitationRequestParams } from '../../app-server/v2';
 import { createCodexMockTestFixture, createTestSessionState, type CodexMockTestFixture } from '../acp-test-utils';
 import type { SessionState } from '../../CodexAcpServer';
 import { AgentMode } from "../../AgentMode";
-import { McpApprovalOptionId } from "../../McpApprovalOptionId";
 import type { ServerNotification } from "../../app-server";
 
 describe('Elicitation Events', () => {
@@ -15,7 +14,7 @@ describe('Elicitation Events', () => {
         vi.clearAllMocks();
     });
 
-    function setupSessionWithPendingPrompt() {
+    function setupSessionWithPendingPrompt(sessionOverrides?: Partial<SessionState>) {
         const codexAcpAgent = fixture.getCodexAcpAgent();
 
         let resolveTurnCompleted: (value: { threadId: string; turn: { id: string; items: never[]; status: string; error: null } }) => void;
@@ -31,7 +30,8 @@ describe('Elicitation Events', () => {
         const sessionState: SessionState = createTestSessionState({
             sessionId,
             currentModelId: 'model-id[effort]',
-            agentMode: AgentMode.DEFAULT_AGENT_MODE
+            agentMode: AgentMode.DEFAULT_AGENT_MODE,
+            ...sessionOverrides,
         });
         vi.spyOn(codexAcpAgent, 'getSessionState').mockReturnValue(sessionState);
 
@@ -50,9 +50,9 @@ describe('Elicitation Events', () => {
     }
 
     describe('Form mode elicitation', () => {
-        it('should map accept to accept', async () => {
+        it('should map allow_once to accept', async () => {
             const { promptPromise, completeTurn } = setupSessionWithPendingPrompt();
-            fixture.setPermissionResponse({ outcome: { outcome: 'selected', optionId: 'accept' } });
+            fixture.setPermissionResponse({ outcome: { outcome: 'selected', optionId: 'allow_once' } });
 
             const params: McpServerElicitationRequestParams = {
                 threadId: sessionId, turnId: 'turn-1', serverName: 'test-server',
@@ -67,9 +67,9 @@ describe('Elicitation Events', () => {
             await promptPromise;
         });
 
-        it('should map decline to decline', async () => {
+        it('should map reject_once to decline', async () => {
             const { promptPromise, completeTurn } = setupSessionWithPendingPrompt();
-            fixture.setPermissionResponse({ outcome: { outcome: 'selected', optionId: 'decline' } });
+            fixture.setPermissionResponse({ outcome: { outcome: 'selected', optionId: 'reject_once' } });
 
             const params: McpServerElicitationRequestParams = {
                 threadId: sessionId, turnId: 'turn-1', serverName: 'test-server',
@@ -114,7 +114,7 @@ describe('Elicitation Events', () => {
 
         it('should build correct ACP permission request for form mode', async () => {
             const { promptPromise, completeTurn } = setupSessionWithPendingPrompt();
-            fixture.setPermissionResponse({ outcome: { outcome: 'selected', optionId: 'accept' } });
+            fixture.setPermissionResponse({ outcome: { outcome: 'selected', optionId: 'allow_once' } });
 
             const params: McpServerElicitationRequestParams = {
                 threadId: sessionId, turnId: 'turn-1', serverName: 'my-mcp-server',
@@ -131,9 +131,11 @@ describe('Elicitation Events', () => {
     });
 
     describe('MCP tool call approval elicitation', () => {
-        it('should show Allow/session/always/Decline options when all persist values advertised', async () => {
-            const { promptPromise, completeTurn } = setupSessionWithPendingPrompt();
-            fixture.setPermissionResponse({ outcome: { outcome: 'selected', optionId: McpApprovalOptionId.AllowOnce } });
+        it('should show Allow/session/always/Cancel options when all persist values advertised', async () => {
+            const { promptPromise, completeTurn } = setupSessionWithPendingPrompt({
+                configBackedMcpServerNames: new Set(['tool-server']),
+            });
+            fixture.setPermissionResponse({ outcome: { outcome: 'selected', optionId: 'allow_once' } });
 
             const params: McpServerElicitationRequestParams = {
                 threadId: sessionId, turnId: 'turn-1', serverName: 'tool-server',
@@ -144,7 +146,75 @@ describe('Elicitation Events', () => {
             };
 
             await fixture.sendServerRequest('mcpServer/elicitation/request', params);
-            await expect(fixture.getAcpConnectionDump(['_meta'])).toMatchFileSnapshot('data/elicitation-tool-approval-all-persist.json');
+            await expect(fixture.getAcpConnectionDump([])).toMatchFileSnapshot('data/elicitation-tool-approval-all-persist.json');
+
+            completeTurn();
+            await promptPromise;
+        });
+
+        it('should include CLI-style descriptions for MCP tool approval options', async () => {
+            const { promptPromise, completeTurn } = setupSessionWithPendingPrompt({
+                configBackedMcpServerNames: new Set(['tool-server']),
+            });
+            fixture.setPermissionResponse({ outcome: { outcome: 'selected', optionId: 'allow_once' } });
+
+            const params: McpServerElicitationRequestParams = {
+                threadId: sessionId, turnId: 'turn-1', serverName: 'tool-server',
+                mode: 'form',
+                _meta: { codex_approval_kind: 'mcp_tool_call', persist: ['session', 'always'] },
+                message: 'Allow tool call?',
+                requestedSchema: { type: 'object', properties: {} },
+            };
+
+            await fixture.sendServerRequest('mcpServer/elicitation/request', params);
+            const [requestPermissionEvent] = fixture.getAcpConnectionEvents([]);
+            expect(requestPermissionEvent?.args[0].options).toEqual([
+                {
+                    optionId: 'allow_once',
+                    name: 'Allow',
+                    kind: 'allow_once',
+                },
+                {
+                    optionId: 'allow_for_session',
+                    name: 'Allow for this session',
+                    kind: 'allow_always',
+                },
+                {
+                    optionId: 'allow_persist',
+                    name: 'Always allow',
+                    kind: 'allow_always',
+                },
+                {
+                    optionId: 'reject_once',
+                    name: 'Cancel',
+                    kind: 'reject_once',
+                },
+            ]);
+
+            completeTurn();
+            await promptPromise;
+        });
+
+        it('should not show persistent approval for MCP servers that are not configured', async () => {
+            const { promptPromise, completeTurn } = setupSessionWithPendingPrompt();
+            fixture.setPermissionResponse({ outcome: { outcome: 'selected', optionId: 'allow_once' } });
+
+            const params: McpServerElicitationRequestParams = {
+                threadId: sessionId, turnId: 'turn-1', serverName: 'tool-server',
+                mode: 'form',
+                _meta: { codex_approval_kind: 'mcp_tool_call', persist: ['session', 'always'] },
+                message: 'Allow tool call?',
+                requestedSchema: { type: 'object', properties: {} },
+            };
+
+            await fixture.sendServerRequest('mcpServer/elicitation/request', params);
+            const [requestPermissionEvent] = fixture.getAcpConnectionEvents([]);
+            const optionIds = requestPermissionEvent?.args[0].options.map((option: { optionId: string }) => option.optionId);
+            expect(optionIds).toEqual([
+                'allow_once',
+                'allow_for_session',
+                'reject_once',
+            ]);
 
             completeTurn();
             await promptPromise;
@@ -152,7 +222,7 @@ describe('Elicitation Events', () => {
 
         it('should map allow_once to accept with null meta', async () => {
             const { promptPromise, completeTurn } = setupSessionWithPendingPrompt();
-            fixture.setPermissionResponse({ outcome: { outcome: 'selected', optionId: McpApprovalOptionId.AllowOnce } });
+            fixture.setPermissionResponse({ outcome: { outcome: 'selected', optionId: 'allow_once' } });
 
             const params: McpServerElicitationRequestParams = {
                 threadId: sessionId, turnId: 'turn-1', serverName: 'tool-server',
@@ -169,9 +239,9 @@ describe('Elicitation Events', () => {
             await promptPromise;
         });
 
-        it('should map allow_session to accept with persist:session meta', async () => {
+        it('should map allow_for_session to accept with persist:session meta', async () => {
             const { promptPromise, completeTurn } = setupSessionWithPendingPrompt();
-            fixture.setPermissionResponse({ outcome: { outcome: 'selected', optionId: McpApprovalOptionId.AllowSession } });
+            fixture.setPermissionResponse({ outcome: { outcome: 'selected', optionId: 'allow_for_session' } });
 
             const params: McpServerElicitationRequestParams = {
                 threadId: sessionId, turnId: 'turn-1', serverName: 'tool-server',
@@ -188,9 +258,11 @@ describe('Elicitation Events', () => {
             await promptPromise;
         });
 
-        it('should map allow_always to accept with persist:always meta', async () => {
-            const { promptPromise, completeTurn } = setupSessionWithPendingPrompt();
-            fixture.setPermissionResponse({ outcome: { outcome: 'selected', optionId: McpApprovalOptionId.AllowAlways } });
+        it('should map persistent approval to accept with persist:always meta', async () => {
+            const { promptPromise, completeTurn } = setupSessionWithPendingPrompt({
+                configBackedMcpServerNames: new Set(['tool-server']),
+            });
+            fixture.setPermissionResponse({ outcome: { outcome: 'selected', optionId: 'allow_persist' } });
 
             const params: McpServerElicitationRequestParams = {
                 threadId: sessionId, turnId: 'turn-1', serverName: 'tool-server',
@@ -209,7 +281,7 @@ describe('Elicitation Events', () => {
 
         it('should only show session option when persist is "session"', async () => {
             const { promptPromise, completeTurn } = setupSessionWithPendingPrompt();
-            fixture.setPermissionResponse({ outcome: { outcome: 'selected', optionId: McpApprovalOptionId.AllowOnce } });
+            fixture.setPermissionResponse({ outcome: { outcome: 'selected', optionId: 'allow_once' } });
 
             const params: McpServerElicitationRequestParams = {
                 threadId: sessionId, turnId: 'turn-1', serverName: 'tool-server',
@@ -220,15 +292,15 @@ describe('Elicitation Events', () => {
             };
 
             await fixture.sendServerRequest('mcpServer/elicitation/request', params);
-            await expect(fixture.getAcpConnectionDump(['_meta'])).toMatchFileSnapshot('data/elicitation-tool-approval-session-only.json');
+            await expect(fixture.getAcpConnectionDump([])).toMatchFileSnapshot('data/elicitation-tool-approval-session-only.json');
 
             completeTurn();
             await promptPromise;
         });
 
-        it('should show only Allow and Decline when no persist options', async () => {
+        it('should show only Allow and Cancel when no persist options', async () => {
             const { promptPromise, completeTurn } = setupSessionWithPendingPrompt();
-            fixture.setPermissionResponse({ outcome: { outcome: 'selected', optionId: McpApprovalOptionId.AllowOnce } });
+            fixture.setPermissionResponse({ outcome: { outcome: 'selected', optionId: 'allow_once' } });
 
             const params: McpServerElicitationRequestParams = {
                 threadId: sessionId, turnId: 'turn-1', serverName: 'tool-server',
@@ -239,7 +311,7 @@ describe('Elicitation Events', () => {
             };
 
             await fixture.sendServerRequest('mcpServer/elicitation/request', params);
-            await expect(fixture.getAcpConnectionDump(['_meta'])).toMatchFileSnapshot('data/elicitation-tool-approval-no-persist.json');
+            await expect(fixture.getAcpConnectionDump([])).toMatchFileSnapshot('data/elicitation-tool-approval-no-persist.json');
 
             completeTurn();
             await promptPromise;
@@ -247,7 +319,7 @@ describe('Elicitation Events', () => {
 
         it('should not reuse a completed auto-approved call id for a later approval request', async () => {
             const { promptPromise, completeTurn } = setupSessionWithPendingPrompt();
-            fixture.setPermissionResponse({ outcome: { outcome: 'selected', optionId: McpApprovalOptionId.AllowOnce } });
+            fixture.setPermissionResponse({ outcome: { outcome: 'selected', optionId: 'allow_once' } });
 
             const startedNotification: ServerNotification = {
                 method: 'item/started',
@@ -310,7 +382,7 @@ describe('Elicitation Events', () => {
 
         it('should not reuse a stale call id after serverRequest/resolved clears interrupted approval state', async () => {
             const { promptPromise, completeTurn } = setupSessionWithPendingPrompt();
-            fixture.setPermissionResponse({ outcome: { outcome: 'selected', optionId: McpApprovalOptionId.AllowOnce } });
+            fixture.setPermissionResponse({ outcome: { outcome: 'selected', optionId: 'allow_once' } });
 
             const startedNotification: ServerNotification = {
                 method: 'item/started',
@@ -362,9 +434,9 @@ describe('Elicitation Events', () => {
     });
 
     describe('URL mode elicitation', () => {
-        it('should map accept to accept for URL mode', async () => {
+        it('should map allow_once to accept for URL mode', async () => {
             const { promptPromise, completeTurn } = setupSessionWithPendingPrompt();
-            fixture.setPermissionResponse({ outcome: { outcome: 'selected', optionId: 'accept' } });
+            fixture.setPermissionResponse({ outcome: { outcome: 'selected', optionId: 'allow_once' } });
 
             const params: McpServerElicitationRequestParams = {
                 threadId: sessionId, turnId: 'turn-1', serverName: 'auth-server',
@@ -398,7 +470,7 @@ describe('Elicitation Events', () => {
 
         it('should build correct ACP permission request for URL mode', async () => {
             const { promptPromise, completeTurn } = setupSessionWithPendingPrompt();
-            fixture.setPermissionResponse({ outcome: { outcome: 'selected', optionId: 'accept' } });
+            fixture.setPermissionResponse({ outcome: { outcome: 'selected', optionId: 'allow_once' } });
 
             const params: McpServerElicitationRequestParams = {
                 threadId: sessionId, turnId: 'turn-1', serverName: 'auth-server',
