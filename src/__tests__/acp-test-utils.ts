@@ -216,6 +216,7 @@ export interface CodexMockTestFixture extends TestFixture {
 export function createCodexMockTestFixture(): CodexMockTestFixture {
     let unhandledNotificationHandler: ((notification: any) => void) | null = null;
     const requestHandlers = new Map<string, (params: unknown) => Promise<unknown>>();
+    const notificationHandlers = new Map<string, Array<(params: unknown) => void>>();
 
     // State for controlling permission responses
     const permissionState: { response: RequestPermissionResponse } = {
@@ -227,7 +228,17 @@ export function createCodexMockTestFixture(): CodexMockTestFixture {
         onUnhandledNotification: (handler: (notification: any) => void) => {
             unhandledNotificationHandler = handler;
         },
-        onNotification: () => {},
+        onNotification: (method: string, handler: (params: unknown) => void) => {
+            const handlers = notificationHandlers.get(method) ?? [];
+            handlers.push(handler);
+            notificationHandlers.set(method, handlers);
+            return {
+                dispose: () => {
+                    const currentHandlers = notificationHandlers.get(method) ?? [];
+                    notificationHandlers.set(method, currentHandlers.filter(current => current !== handler));
+                }
+            };
+        },
         onRequest: (type: { method: string }, handler: (params: unknown) => Promise<unknown>) => {
             requestHandlers.set(type.method, handler);
         },
@@ -258,6 +269,12 @@ export function createCodexMockTestFixture(): CodexMockTestFixture {
     return {
         ...baseFixture,
         sendServerNotification(notification: ServerNotification | Record<string, unknown>): void {
+            const method = typeof notification.method === "string" ? notification.method : null;
+            if (method) {
+                for (const handler of notificationHandlers.get(method) ?? []) {
+                    handler(notification.params);
+                }
+            }
             if (unhandledNotificationHandler) {
                 unhandledNotificationHandler(notification);
             }

@@ -3,6 +3,7 @@ import type {AgentSideConnection, AvailableCommand} from "@agentclientprotocol/s
 import {ACPSessionConnection} from "./ACPSessionConnection";
 import type {CodexAcpClient} from "./CodexAcpClient";
 import type {RateLimitSnapshot, SkillsListEntry} from "./app-server/v2";
+import type {TurnCompletedNotification} from "./app-server/v2";
 import type {SessionState} from "./CodexAcpServer";
 import type {RateLimitsMap} from "./RateLimitsMap";
 import type {TokenCount} from "./TokenCount";
@@ -41,7 +42,7 @@ export class CodexCommands {
         }
     }
 
-    async tryHandle(prompt: acp.ContentBlock[], sessionState: SessionState): Promise<boolean> {
+    async tryHandle(prompt: acp.ContentBlock[], sessionState: SessionState): Promise<CommandHandlingResult | false> {
         const command = this.parseCommand(prompt);
         if (command) {
             return this.handleCommand(command, sessionState);
@@ -92,6 +93,11 @@ export class CodexCommands {
                 input: null
             },
             {
+                name: "compact",
+                description: "Compact conversation history to reduce context usage.",
+                input: null
+            },
+            {
                 name: "logout",
                 description: "Sign out of Codex. This option is available when you are logged in via ChatGPT.",
                 input: null
@@ -119,10 +125,12 @@ export class CodexCommands {
         };
     }
 
-    async handleCommand(command: ParsedCommand, sessionState: SessionState): Promise<boolean> {
+    async handleCommand(command: ParsedCommand, sessionState: SessionState): Promise<CommandHandlingResult> {
         const sessionId = sessionState.sessionId;
 
         switch (command.name) {
+            case "compact":
+                return await this.runWithProcessCheck(() => this.codexAcpClient.compactSession(sessionId));
             case "status": {
                 const session = new ACPSessionConnection(this.connection, sessionId);
                 const message = this.buildStatusMessage(sessionState);
@@ -355,3 +363,4 @@ export class CodexCommands {
 }
 
 type ParsedCommand = { name: string; input: string | null };
+type CommandHandlingResult = true | TurnCompletedNotification;

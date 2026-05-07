@@ -227,6 +227,14 @@ export class CodexEventHandler {
                 return await createMcpToolCallUpdate(event.item);
             case "dynamicToolCall":
                 return await createDynamicToolCallUpdate(event.item);
+            case "contextCompaction":
+                return {
+                    sessionUpdate: "tool_call",
+                    toolCallId: event.item.id,
+                    kind: "other",
+                    title: "Compacting context",
+                    status: "in_progress",
+                };
             case "collabAgentToolCall":
             case "userMessage":
             case "hookPrompt":
@@ -237,7 +245,6 @@ export class CodexEventHandler {
             case "imageGeneration":
             case "enteredReviewMode":
             case "exitedReviewMode":
-            case "contextCompaction":
             case "plan":
                 return null;
         }
@@ -272,6 +279,12 @@ export class CodexEventHandler {
                         text: summary
                     }
                 }
+            case "contextCompaction":
+                return {
+                    sessionUpdate: "tool_call_update",
+                    toolCallId: event.item.id,
+                    status: "completed",
+                };
             case "collabAgentToolCall":
             case "userMessage":
             case "hookPrompt":
@@ -281,7 +294,6 @@ export class CodexEventHandler {
             case "imageGeneration":
             case "enteredReviewMode":
             case "exitedReviewMode":
-            case "contextCompaction":
             case "plan":
                 return null;
         }

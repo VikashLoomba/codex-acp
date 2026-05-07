@@ -26,6 +26,8 @@ import type {
     SkillsListResponse,
     ThreadLoadedListParams,
     ThreadLoadedListResponse,
+    ThreadCompactStartParams,
+    ThreadCompactStartResponse,
     ThreadListParams,
     ThreadListResponse,
     ThreadReadParams,
@@ -203,6 +205,10 @@ export class CodexAppServerClient {
 
     async threadRead(params: ThreadReadParams): Promise<ThreadReadResponse> {
         return await this.sendRequest({ method: "thread/read", params: params });
+    }
+
+    async threadCompactStart(params: ThreadCompactStartParams): Promise<ThreadCompactStartResponse> {
+        return await this.sendRequest({ method: "thread/compact/start", params });
     }
 
     async listMcpServerStatus(params: ListMcpServerStatusParams): Promise<ListMcpServerStatusResponse> {

@@ -7,9 +7,24 @@ import {createTestFixture, createCodexMockTestFixture, createTestSessionState, t
 import type {ServerNotification} from "../../app-server";
 import type {SessionState} from "../../CodexAcpServer";
 import {AgentMode} from "../../AgentMode";
-import type {ListMcpServerStatusResponse, Model, SkillsListResponse, TurnStartParams} from "../../app-server/v2";
+import type {ListMcpServerStatusResponse, Model, SkillsListResponse, TurnCompletedNotification, TurnStatus, TurnStartParams} from "../../app-server/v2";
 import type {RateLimitsMap} from "../../RateLimitsMap";
 import {ModelId} from "../../ModelId";
+
+function createTurnCompletedNotification(threadId: string, status: TurnStatus): TurnCompletedNotification {
+    return {
+        threadId,
+        turn: {
+            id: "turn-id",
+            items: [],
+            status,
+            error: null,
+            startedAt: null,
+            completedAt: null,
+            durationMs: null,
+        }
+    };
+}
 
 describe('ACP server test', { timeout: 40_000 }, () => {
 
@@ -735,6 +750,101 @@ describe('ACP server test', { timeout: 40_000 }, () => {
         await expect(mockFixture.getAcpConnectionDump([])).toMatchFileSnapshot("data/command-status.json");
     });
 
+    it('handles compact command via thread/compact/start', async () => {
+        const mockFixture = createCodexMockTestFixture();
+        const codexAcpAgent = mockFixture.getCodexAcpAgent();
+        const sessionState: SessionState = createTestSessionState({ sessionId: "session-id" });
+        vi.spyOn(codexAcpAgent, "getSessionState").mockReturnValue(sessionState);
+
+        const promptPromise = codexAcpAgent.prompt({
+            sessionId: "session-id",
+            prompt: [{ type: "text", text: "/compact" }]
+        });
+
+        await vi.waitFor(() => {
+            expect(mockFixture.getCodexConnectionEvents([]).some(event =>
+                event.eventType === "request"
+                && event.method === "thread/compact/start"
+                && event.params.threadId === "session-id"
+            )).toBe(true);
+        });
+
+        mockFixture.sendServerNotification({
+            method: "turn/completed",
+            params: createTurnCompletedNotification("session-id", "completed")
+        });
+
+        await expect(promptPromise).resolves.toEqual(expect.objectContaining({ stopReason: "end_turn" }));
+        expect(mockFixture.getCodexConnectionEvents([])).toContainEqual(expect.objectContaining({
+            eventType: "request",
+            method: "thread/compact/start",
+            params: { threadId: "session-id" },
+        }));
+    });
+
+    it('waits for compact command turn/completed from the same thread', async () => {
+        const mockFixture = createCodexMockTestFixture();
+        const codexAcpAgent = mockFixture.getCodexAcpAgent();
+        const sessionState: SessionState = createTestSessionState({ sessionId: "session-id" });
+        vi.spyOn(codexAcpAgent, "getSessionState").mockReturnValue(sessionState);
+
+        let resolved = false;
+        const promptPromise = codexAcpAgent.prompt({
+            sessionId: "session-id",
+            prompt: [{ type: "text", text: "/compact" }]
+        }).then(response => {
+            resolved = true;
+            return response;
+        });
+
+        await vi.waitFor(() => {
+            expect(mockFixture.getCodexConnectionEvents([]).some(event =>
+                event.eventType === "request" && event.method === "thread/compact/start"
+            )).toBe(true);
+        });
+
+        mockFixture.sendServerNotification({
+            method: "turn/completed",
+            params: createTurnCompletedNotification("other-session-id", "completed")
+        });
+
+        await new Promise(resolve => setTimeout(resolve, 0));
+        expect(resolved).toBe(false);
+
+        mockFixture.sendServerNotification({
+            method: "turn/completed",
+            params: createTurnCompletedNotification("session-id", "completed")
+        });
+
+        await expect(promptPromise).resolves.toEqual(expect.objectContaining({ stopReason: "end_turn" }));
+        expect(resolved).toBe(true);
+    });
+
+    it('maps interrupted compact command to cancelled prompt response', async () => {
+        const mockFixture = createCodexMockTestFixture();
+        const codexAcpAgent = mockFixture.getCodexAcpAgent();
+        const sessionState: SessionState = createTestSessionState({ sessionId: "session-id" });
+        vi.spyOn(codexAcpAgent, "getSessionState").mockReturnValue(sessionState);
+
+        const promptPromise = codexAcpAgent.prompt({
+            sessionId: "session-id",
+            prompt: [{ type: "text", text: "/compact" }]
+        });
+
+        await vi.waitFor(() => {
+            expect(mockFixture.getCodexConnectionEvents([]).some(event =>
+                event.eventType === "request" && event.method === "thread/compact/start"
+            )).toBe(true);
+        });
+
+        mockFixture.sendServerNotification({
+            method: "turn/completed",
+            params: createTurnCompletedNotification("session-id", "interrupted")
+        });
+
+        await expect(promptPromise).resolves.toEqual(expect.objectContaining({ stopReason: "cancelled" }));
+    });
+
     it('handles logout command', async () => {
         const mockFixture = createCodexMockTestFixture();
         const codexAcpAgent = mockFixture.getCodexAcpAgent();
@@ -1030,6 +1140,51 @@ describe('ACP server test', { timeout: 40_000 }, () => {
         });
 
         await expect(mockFixture.getAcpConnectionDump([])).toMatchFileSnapshot("data/thread-compacted.json");
+    });
+
+    it ('should surface context compaction progress and final message', async () => {
+        const sessionId = "test-session-id";
+        const { mockFixture } = setupPromptFixture({ sessionId });
+
+        await mockFixture.getCodexAcpAgent().prompt({
+            sessionId,
+            prompt: [{ type: "text", text: "test" }],
+        });
+
+        mockFixture.clearAcpConnectionDump();
+
+        mockFixture.sendServerNotification({
+            method: "item/started",
+            params: {
+                threadId: sessionId,
+                turnId: "turn-id",
+                item: { type: "contextCompaction", id: "compact-item-id" }
+            }
+        });
+        await vi.waitFor(() => {
+            expect(mockFixture.getAcpConnectionEvents([])).toHaveLength(1);
+        });
+        mockFixture.sendServerNotification({
+            method: "item/completed",
+            params: {
+                threadId: sessionId,
+                turnId: "turn-id",
+                item: { type: "contextCompaction", id: "compact-item-id" }
+            }
+        });
+        await vi.waitFor(() => {
+            expect(mockFixture.getAcpConnectionEvents([])).toHaveLength(2);
+        });
+        mockFixture.sendServerNotification({
+            method: "thread/compacted",
+            params: { threadId: sessionId, turnId: "turn-id" }
+        });
+
+        await vi.waitFor(() => {
+            expect(mockFixture.getAcpConnectionEvents([])).toHaveLength(3);
+        });
+
+        await expect(mockFixture.getAcpConnectionDump([])).toMatchFileSnapshot("data/context-compaction-progress.json");
     });
 
     it ('should accumulate rate limits from multiple notifications', async () => {

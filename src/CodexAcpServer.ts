@@ -15,6 +15,7 @@ import type {
     ReasoningEffortOption,
     Thread,
     ThreadItem,
+    TurnCompletedNotification,
     UserInput
 } from "./app-server/v2";
 import type {RateLimitsMap} from "./RateLimitsMap";
@@ -742,13 +743,20 @@ export class CodexAcpServer implements acp.Agent {
                 approvalHandler,
                 elicitationHandler);
 
-            if (await this.availableCommands.tryHandle(params.prompt, sessionState)) {
+            const commandResult = await this.availableCommands.tryHandle(params.prompt, sessionState);
+            if (commandResult) {
                 logger.log("Prompt handled by a command");
-                return {
-                    stopReason: "end_turn",
-                    usage: this.buildPromptUsage(sessionState.lastTokenUsage),
-                    _meta: this.buildQuotaMeta(sessionState),
-                };
+                if (commandResult !== true) {
+                    const interruptedResponse = await this.createInterruptedResponseIfNeeded(params.sessionId, commandResult, sessionState);
+                    if (interruptedResponse) {
+                        return interruptedResponse;
+                    }
+                }
+                const error = eventHandler.getFailure();
+                if (error) {
+                    throw error;
+                }
+                return this.createPromptResponse("end_turn", sessionState);
             }
 
             const modelId = ModelId.fromString(sessionState.currentModelId);
@@ -771,22 +779,9 @@ export class CodexAcpServer implements acp.Agent {
                 () => this.codexAcpClient.sendPrompt(params, agentMode, modelId, disableSummary, sessionState.cwd));
 
             // Check if turn was interrupted (cancelled)
-            if (turnCompleted.turn.status === "interrupted") {
-                await this.connection.sessionUpdate({
-                    sessionId: params.sessionId,
-                    update: {
-                        sessionUpdate: "agent_message_chunk",
-                        content: {
-                            type: "text",
-                            text: "*Conversation interrupted*"
-                        }
-                    }
-                });
-                return {
-                    stopReason: "cancelled",
-                    usage: this.buildPromptUsage(sessionState.lastTokenUsage),
-                    _meta: this.buildQuotaMeta(sessionState),
-                };
+            const interruptedResponse = await this.createInterruptedResponseIfNeeded(params.sessionId, turnCompleted, sessionState);
+            if (interruptedResponse) {
+                return interruptedResponse;
             }
 
             const error = eventHandler.getFailure()
@@ -795,11 +790,7 @@ export class CodexAcpServer implements acp.Agent {
                 throw error;
             }
 
-            return {
-                stopReason: "end_turn",
-                usage: this.buildPromptUsage(sessionState.lastTokenUsage),
-                _meta: this.buildQuotaMeta(sessionState),
-            };
+            return this.createPromptResponse("end_turn", sessionState);
         } catch (err) {
             logger.error(`Prompt for session ${params.sessionId} failed`, err);
             throw err;
@@ -833,6 +824,35 @@ export class CodexAcpServer implements acp.Agent {
             return null;
         }
         return toPromptUsage(lastTokenUsage);
+    }
+
+    private async createInterruptedResponseIfNeeded(
+        sessionId: string,
+        turnCompleted: TurnCompletedNotification,
+        sessionState: SessionState
+    ): Promise<acp.PromptResponse | null> {
+        if (turnCompleted.turn.status !== "interrupted") {
+            return null;
+        }
+        await this.connection.sessionUpdate({
+            sessionId,
+            update: {
+                sessionUpdate: "agent_message_chunk",
+                content: {
+                    type: "text",
+                    text: "*Conversation interrupted*"
+                }
+            }
+        });
+        return this.createPromptResponse("cancelled", sessionState);
+    }
+
+    private createPromptResponse(stopReason: acp.PromptResponse["stopReason"], sessionState: SessionState): acp.PromptResponse {
+        return {
+            stopReason,
+            usage: this.buildPromptUsage(sessionState.lastTokenUsage),
+            _meta: this.buildQuotaMeta(sessionState),
+        };
     }
 
     private async runWithProcessCheck<T>(operation: () => Promise<T>): Promise<T> {

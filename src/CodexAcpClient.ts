@@ -415,6 +415,12 @@ export class CodexAcpClient {
         });
     }
 
+    async compactSession(sessionId: string): Promise<TurnCompletedNotification> {
+        const turnCompleted = this.codexClient.awaitTurnCompleted(sessionId);
+        await this.codexClient.threadCompactStart({ threadId: sessionId });
+        return await turnCompleted;
+    }
+
     async listSkills(params?: SkillsListParams): Promise<SkillsListResponse> {
         return this.codexClient.listSkills(params ?? {});
     }
