@@ -26,6 +26,7 @@ describe("Model filtering", () => {
                 defaultReasoningEffort: "medium",
                 supportsPersonality: false,
                 additionalSpeedTiers: [],
+            serviceTiers: [],
                 isDefault: false,
                 inputModalities: []
             },
@@ -42,6 +43,7 @@ describe("Model filtering", () => {
                 defaultReasoningEffort: "medium",
                 supportsPersonality: false,
                 additionalSpeedTiers: [],
+            serviceTiers: [],
                 isDefault: false,
                 inputModalities: []
             },
@@ -58,6 +60,7 @@ describe("Model filtering", () => {
                 defaultReasoningEffort: "medium",
                 supportsPersonality: false,
                 additionalSpeedTiers: [],
+            serviceTiers: [],
                 isDefault: false,
                 inputModalities: []
             },
@@ -74,6 +77,7 @@ describe("Model filtering", () => {
                 defaultReasoningEffort: "medium",
                 supportsPersonality: false,
                 additionalSpeedTiers: [],
+            serviceTiers: [],
                 isDefault: false,
                 inputModalities: []
             },

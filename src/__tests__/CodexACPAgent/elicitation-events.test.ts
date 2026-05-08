@@ -251,6 +251,7 @@ describe('Elicitation Events', () => {
             const startedNotification: ServerNotification = {
                 method: 'item/started',
                 params: {
+                    startedAtMs: 0,
                     threadId: sessionId,
                     turnId: 'turn-1',
                     item: {
@@ -269,6 +270,7 @@ describe('Elicitation Events', () => {
             const completedNotification: ServerNotification = {
                 method: 'item/completed',
                 params: {
+                    completedAtMs: 0,
                     threadId: sessionId,
                     turnId: 'turn-1',
                     item: {
@@ -314,6 +316,7 @@ describe('Elicitation Events', () => {
             const startedNotification: ServerNotification = {
                 method: 'item/started',
                 params: {
+                    startedAtMs: 0,
                     threadId: sessionId,
                     turnId: 'turn-1',
                     item: {

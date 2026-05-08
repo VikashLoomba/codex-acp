@@ -240,6 +240,7 @@ describe('ACP server test', { timeout: 40_000 }, () => {
                 inputModalities: ["text"],
                 supportsPersonality: false,
                 additionalSpeedTiers: [],
+                serviceTiers: [],
                 isDefault: true
             }],
             nextCursor: null
@@ -411,6 +412,7 @@ describe('ACP server test', { timeout: 40_000 }, () => {
         return {
             id,
             items: [],
+            itemsView: "full" as const,
             status,
             error: null,
             startedAt: null,
@@ -652,6 +654,7 @@ describe('ACP server test', { timeout: 40_000 }, () => {
             turn: {
                 id: "turn-id",
                 items: [],
+                itemsView: "full",
                 status: "completed",
                 error: null,
                 startedAt: null,
@@ -829,6 +832,7 @@ describe('ACP server test', { timeout: 40_000 }, () => {
             defaultReasoningEffort: 'medium',
             supportsPersonality: false,
             additionalSpeedTiers: [],
+            serviceTiers: [],
             isDefault: false,
             inputModalities: []
         },
@@ -847,6 +851,7 @@ describe('ACP server test', { timeout: 40_000 }, () => {
             defaultReasoningEffort: 'low',
             supportsPersonality: false,
             additionalSpeedTiers: [],
+            serviceTiers: [],
             isDefault: true,
             inputModalities: []
         }
@@ -873,6 +878,7 @@ describe('ACP server test', { timeout: 40_000 }, () => {
             turn: {
                 id: "turn-id",
                 items: [],
+                itemsView: "full",
                 status: "inProgress",
                 error: null,
                 startedAt: null,
@@ -885,6 +891,7 @@ describe('ACP server test', { timeout: 40_000 }, () => {
             turn: {
                 id: "turn-id",
                 items: [],
+                itemsView: "full",
                 status: "completed",
                 error: null,
                 startedAt: null,
