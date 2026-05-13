@@ -94,7 +94,7 @@ export class CodexCommands {
             },
             {
                 name: "compact",
-                description: "Compact conversation history to reduce context usage.",
+                description: "Summarize conversation to prevent hitting the context limit.",
                 input: null
             },
             {
