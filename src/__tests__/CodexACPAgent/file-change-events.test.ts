@@ -44,6 +44,7 @@ describe('CodexEventHandler - file change events', () => {
         const newFileNotification: ServerNotification = {
             method: 'item/started',
             params: {
+                startedAtMs: 123,
                 threadId: sessionId,
                 turnId: 'turn-1',
                 item: {
@@ -79,6 +80,7 @@ describe('CodexEventHandler - file change events', () => {
         const multiFileNotification: ServerNotification = {
             method: 'item/started',
             params: {
+                startedAtMs: 123,
                 threadId: sessionId,
                 turnId: 'turn-1',
                 item: {
@@ -119,6 +121,7 @@ describe('CodexEventHandler - file change events', () => {
         const newFileNotification: ServerNotification = {
             method: 'item/started',
             params: {
+                startedAtMs: 123,
                 threadId: sessionId,
                 turnId: 'turn-1',
                 item: {
@@ -147,6 +150,7 @@ describe('CodexEventHandler - file change events', () => {
         const deleteFileNotification: ServerNotification = {
             method: 'item/started',
             params: {
+                startedAtMs: 123,
                 threadId: sessionId,
                 turnId: 'turn-1',
                 item: {
@@ -183,6 +187,7 @@ describe('CodexEventHandler - file change events', () => {
         const deletedFileNotification: ServerNotification = {
             method: 'item/started',
             params: {
+                startedAtMs: 123,
                 threadId: sessionId,
                 turnId: 'turn-1',
                 item: {
@@ -213,6 +218,7 @@ describe('CodexEventHandler - file change events', () => {
         const deleteFileNotification: ServerNotification = {
             method: 'item/started',
             params: {
+                startedAtMs: 123,
                 threadId: sessionId,
                 turnId: 'turn-1',
                 item: {
@@ -248,6 +254,7 @@ describe('CodexEventHandler - file change events', () => {
         const deletedFileNotification: ServerNotification = {
             method: 'item/started',
             params: {
+                startedAtMs: 123,
                 threadId: sessionId,
                 turnId: 'turn-1',
                 item: {

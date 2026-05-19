@@ -23,6 +23,7 @@ describe('CodexEventHandler - terminal output events', () => {
         const commandStartNotification: ServerNotification = {
             method: 'item/started',
             params: {
+                startedAtMs: 123,
                 threadId: sessionId,
                 turnId: 'turn-1',
                 item: {
@@ -60,6 +61,7 @@ describe('CodexEventHandler - terminal output events', () => {
         const commandStartNotification: ServerNotification = {
             method: 'item/started',
             params: {
+                startedAtMs: 123,
                 threadId: sessionId,
                 turnId: 'turn-1',
                 item: {
@@ -108,6 +110,7 @@ describe('CodexEventHandler - terminal output events', () => {
         const commandCompletedNotification: ServerNotification = {
             method: 'item/completed',
             params: {
+                completedAtMs: 124,
                 threadId: sessionId,
                 turnId: 'turn-1',
                 item: {
@@ -137,6 +140,7 @@ describe('CodexEventHandler - terminal output events', () => {
         const commandFailedNotification: ServerNotification = {
             method: 'item/completed',
             params: {
+                completedAtMs: 124,
                 threadId: sessionId,
                 turnId: 'turn-1',
                 item: {
@@ -166,6 +170,7 @@ describe('CodexEventHandler - terminal output events', () => {
         const dynamicToolCompletedNotification: ServerNotification = {
             method: 'item/completed',
             params: {
+                completedAtMs: 124,
                 threadId: sessionId,
                 turnId: 'turn-1',
                 item: {
@@ -193,6 +198,7 @@ describe('CodexEventHandler - terminal output events', () => {
         const commandStartNotification: ServerNotification = {
             method: 'item/started',
             params: {
+                startedAtMs: 123,
                 threadId: sessionId,
                 turnId: 'turn-1',
                 item: {
@@ -224,6 +230,7 @@ describe('CodexEventHandler - terminal output events', () => {
         const commandCompletedNotification: ServerNotification = {
             method: 'item/completed',
             params: {
+                completedAtMs: 124,
                 threadId: sessionId,
                 turnId: 'turn-1',
                 item: {

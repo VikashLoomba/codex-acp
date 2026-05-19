@@ -332,14 +332,9 @@ export class CodexAcpClient {
         if (!cwd) {
             return;
         }
-        const additionalRoots = readAdditionalRoots(meta);
         await this.codexClient.listSkills({
             cwds: [cwd],
             forceReload: true,
-            perCwdExtraUserRoots: [{
-                cwd: cwd,
-                extraUserRoots: additionalRoots
-            }]
         });
     }
 
@@ -657,18 +652,6 @@ interface GatewayConfig {
         http_headers: Record<string, string>,
         wire_api: "responses"
     }
-}
-
-function readAdditionalRoots(meta: Record<string, unknown> | null | undefined): string[] {
-    const rawRoots = meta?.["additionalRoots"];
-    if (!Array.isArray(rawRoots)) {
-        return [];
-    }
-
-    return Array.from(new Set(rawRoots
-        .filter((value): value is string => typeof value === "string")
-        .map(value => value.trim())
-        .filter(value => value.length > 0)));
 }
 
 function mergeGatewayConfig(config: JsonObject, gatewayConfig: GatewayConfig | null): JsonObject {

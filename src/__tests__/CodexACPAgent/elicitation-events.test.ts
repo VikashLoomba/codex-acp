@@ -17,13 +17,13 @@ describe('Elicitation Events', () => {
     function setupSessionWithPendingPrompt() {
         const codexAcpAgent = fixture.getCodexAcpAgent();
 
-        let resolveTurnCompleted: (value: { threadId: string; turn: { id: string; items: never[]; status: string; error: null } }) => void;
-        const turnCompletedPromise = new Promise<{ threadId: string; turn: { id: string; items: never[]; status: string; error: null } }>((resolve) => {
+        let resolveTurnCompleted: (value: { threadId: string; turn: { id: string; items: never[]; itemsView: "full"; status: string; error: null } }) => void;
+        const turnCompletedPromise = new Promise<{ threadId: string; turn: { id: string; items: never[]; itemsView: "full"; status: string; error: null } }>((resolve) => {
             resolveTurnCompleted = resolve;
         });
 
         fixture.getCodexAppServerClient().turnStart = vi.fn().mockResolvedValue({
-            turn: { id: "turn-id", items: [], status: "inProgress", error: null }
+            turn: { id: "turn-id", items: [], itemsView: "full", status: "inProgress", error: null }
         });
         fixture.getCodexAppServerClient().awaitTurnCompleted = vi.fn().mockReturnValue(turnCompletedPromise);
 
@@ -43,7 +43,7 @@ describe('Elicitation Events', () => {
             promptPromise,
             completeTurn: () => resolveTurnCompleted!({
                 threadId: sessionId,
-                turn: { id: "turn-id", items: [], status: "completed", error: null }
+                turn: { id: "turn-id", items: [], itemsView: "full", status: "completed", error: null }
             })
         };
     }
@@ -251,6 +251,7 @@ describe('Elicitation Events', () => {
             const startedNotification: ServerNotification = {
                 method: 'item/started',
                 params: {
+                    startedAtMs: 123,
                     threadId: sessionId,
                     turnId: 'turn-1',
                     item: {
@@ -269,6 +270,7 @@ describe('Elicitation Events', () => {
             const completedNotification: ServerNotification = {
                 method: 'item/completed',
                 params: {
+                    completedAtMs: 124,
                     threadId: sessionId,
                     turnId: 'turn-1',
                     item: {
@@ -314,6 +316,7 @@ describe('Elicitation Events', () => {
             const startedNotification: ServerNotification = {
                 method: 'item/started',
                 params: {
+                    startedAtMs: 123,
                     threadId: sessionId,
                     turnId: 'turn-1',
                     item: {

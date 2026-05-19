@@ -33,6 +33,7 @@ describe("CodexACPAgent - loadSession", () => {
             inputModalities: ["text", "image"],
             supportsPersonality: false,
             additionalSpeedTiers: [],
+            serviceTiers: [],
             isDefault: true,
         };
 
@@ -43,6 +44,7 @@ describe("CodexACPAgent - loadSession", () => {
 
         const thread: Thread = {
             id: "session-1",
+            sessionId: "session-1",
             forkedFromId: null,
             preview: "Hi",
             ephemeral: false,
@@ -54,6 +56,7 @@ describe("CodexACPAgent - loadSession", () => {
             cwd: "/test/project",
             cliVersion: "0.0.0",
             source: "cli",
+            threadSource: null,
             agentNickname: null,
             agentRole: null,
             gitInfo: null,
@@ -66,6 +69,7 @@ describe("CodexACPAgent - loadSession", () => {
                     startedAt: null,
                     completedAt: null,
                     durationMs: null,
+                    itemsView: "full",
                     items: [
                         {
                             type: "userMessage",
@@ -196,6 +200,7 @@ describe("CodexACPAgent - loadSession", () => {
             inputModalities: ["text"],
             supportsPersonality: false,
             additionalSpeedTiers: [],
+            serviceTiers: [],
             isDefault: true,
         };
 
@@ -217,6 +222,7 @@ describe("CodexACPAgent - loadSession", () => {
                 cwd: "/test/project",
                 cliVersion: "0.0.0",
                 source: "cli",
+                threadSource: null,
                 agentNickname: null,
                 agentRole: null,
                 gitInfo: null,
@@ -268,6 +274,7 @@ describe("CodexACPAgent - loadSession", () => {
             inputModalities: ["text"],
             supportsPersonality: false,
             additionalSpeedTiers: [],
+            serviceTiers: [],
             isDefault: true,
         };
 
@@ -289,6 +296,7 @@ describe("CodexACPAgent - loadSession", () => {
                 cwd: "/test/project",
                 cliVersion: "0.0.0",
                 source: "cli",
+                threadSource: null,
                 agentNickname: null,
                 agentRole: null,
                 gitInfo: null,

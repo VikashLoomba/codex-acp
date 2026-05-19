@@ -23,6 +23,7 @@ describe('CodexEventHandler - command action events', () => {
         const listFilesNotification: ServerNotification = {
             method: 'item/started',
             params: {
+                startedAtMs: 123,
                 threadId: sessionId,
                 turnId: 'turn-1',
                 item: {
@@ -58,6 +59,7 @@ describe('CodexEventHandler - command action events', () => {
         const listFilesNotification: ServerNotification = {
             method: 'item/started',
             params: {
+                startedAtMs: 123,
                 threadId: sessionId,
                 turnId: 'turn-1',
                 item: {
@@ -93,6 +95,7 @@ describe('CodexEventHandler - command action events', () => {
         const searchNotification: ServerNotification = {
             method: 'item/started',
             params: {
+                startedAtMs: 123,
                 threadId: sessionId,
                 turnId: 'turn-1',
                 item: {
@@ -129,6 +132,7 @@ describe('CodexEventHandler - command action events', () => {
         const searchNotification: ServerNotification = {
             method: 'item/started',
             params: {
+                startedAtMs: 123,
                 threadId: sessionId,
                 turnId: 'turn-1',
                 item: {
@@ -165,6 +169,7 @@ describe('CodexEventHandler - command action events', () => {
         const searchNotification: ServerNotification = {
             method: 'item/started',
             params: {
+                startedAtMs: 123,
                 threadId: sessionId,
                 turnId: 'turn-1',
                 item: {
@@ -201,6 +206,7 @@ describe('CodexEventHandler - command action events', () => {
         const searchNotification: ServerNotification = {
             method: 'item/started',
             params: {
+                startedAtMs: 123,
                 threadId: sessionId,
                 turnId: 'turn-1',
                 item: {
@@ -237,6 +243,7 @@ describe('CodexEventHandler - command action events', () => {
         const searchNotification: ServerNotification = {
             method: 'item/started',
             params: {
+                startedAtMs: 123,
                 threadId: sessionId,
                 turnId: 'turn-1',
                 item: {
@@ -265,6 +272,7 @@ describe('CodexEventHandler - command action events', () => {
             {
                 method: 'item/started',
                 params: {
+                    startedAtMs: 123,
                     threadId: sessionId,
                     turnId: 'turn-1',
                     item: {
@@ -292,6 +300,7 @@ describe('CodexEventHandler - command action events', () => {
             {
                 method: 'item/completed',
                 params: {
+                    completedAtMs: 124,
                     threadId: sessionId,
                     turnId: 'turn-1',
                     item: {
@@ -324,6 +333,7 @@ describe('CodexEventHandler - command action events', () => {
             {
                 method: 'item/started',
                 params: {
+                    startedAtMs: 123,
                     threadId: sessionId,
                     turnId: 'turn-1',
                     item: {
@@ -360,6 +370,7 @@ describe('CodexEventHandler - command action events', () => {
             {
                 method: 'item/completed',
                 params: {
+                    completedAtMs: 124,
                     threadId: sessionId,
                     turnId: 'turn-1',
                     item: {
@@ -390,6 +401,7 @@ describe('CodexEventHandler - command action events', () => {
         const dynamicToolNotification: ServerNotification = {
             method: 'item/started',
             params: {
+                startedAtMs: 123,
                 threadId: sessionId,
                 turnId: 'turn-1',
                 item: {
