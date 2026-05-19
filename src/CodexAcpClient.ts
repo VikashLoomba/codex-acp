@@ -28,6 +28,7 @@ import type {
     GetAccountResponse,
     ListMcpServerStatusResponse,
     Model,
+    PluginListMarketplaceKind,
     SkillsListParams,
     SkillsListResponse,
     Thread,
@@ -37,11 +38,16 @@ import type {
 } from "./app-server/v2";
 import packageJson from "../package.json";
 import type {AuthenticationStatusResponse} from "./AcpExtensions";
+import {CODEX_SKILL_FILE_NAME} from "./SkillDirectoryParser";
+import {installAdditionalRootSkillMarketplaces} from "./LocalSkillMarketplace";
 
 const FILE_URI_PREFIX = "file://";
 // From the Codex Rust implementation, `codex-rs/core-skills/src/loader.rs` defines `SKILLS_FILENAME = "SKILL.md"` and only parses files whose discovered filename exactly matches that value. The app-server README and bundled skill-creator sample also document `SKILL.md` as the required file for a skill. There is
 // some UI/mention handling that recognizes paths ending in `SKILL.md`, but the actual loader discovery path is hardcoded around this filename.
-const SKILL_FILE_NAME = "SKILL.md";
+
+type SessionId = string;
+type AdditionalRootPath = string;
+type AdditionalRootPaths = AdditionalRootPath[];
 
 /**
  * API for accessing the Codex App Server using ACP requests.
@@ -52,6 +58,7 @@ export class CodexAcpClient {
     private readonly config: JsonObject;
     private readonly modelProvider: string | null;
     private gatewayConfig: GatewayConfig | null;
+    private readonly additionalRootPathsBySessionId = new Map<SessionId, AdditionalRootPaths>();
     private pendingLoginCompleted: Promise<AccountLoginCompletedNotification> | null = null;
     private pendingAccountUpdated: Promise<AccountUpdatedNotification> | null = null;
 
@@ -188,6 +195,18 @@ export class CodexAcpClient {
         await accountUpdatedPromise;
     }
 
+    async removeMarketplace(marketplaceName: string): Promise<void> {
+        await this.codexClient.marketplaceRemove({marketplaceName});
+    }
+
+    async listMarketplaces(cwd: string, marketplaceKinds: PluginListMarketplaceKind[]): Promise<string[]> {
+        const pluginList = await this.codexClient.pluginList({
+            cwds: cwd ? [cwd] : [],
+            marketplaceKinds: marketplaceKinds,
+        });
+        return pluginList.marketplaces.map((marketplace) => marketplace.name);
+    }
+
     async authRequired(): Promise<Boolean> {
         if (this.gatewayConfig != null) {
             // The authentication is already in progress:
@@ -206,7 +225,14 @@ export class CodexAcpClient {
     }
 
     async resumeSession(request: acp.ResumeSessionRequest): Promise<SessionMetadata> {
+        const additionalRootPaths = readAdditionalRootPaths(request._meta, request.additionalDirectories);
         await this.refreshSkills(request.cwd, request._meta);
+        await installAdditionalRootSkillMarketplaces({
+            codexClient: this.codexClient,
+            cwd: request.cwd,
+            additionalRootPaths,
+        });
+        this.additionalRootPathsBySessionId.set(request.sessionId, additionalRootPaths);
 
         const response = await this.codexClient.threadResume({
             config: await this.createSessionConfig(request.cwd, request.mcpServers ?? []),
@@ -225,6 +251,15 @@ export class CodexAcpClient {
     }
 
     async loadSession(request: acp.LoadSessionRequest): Promise<SessionMetadataWithThread> {
+        const additionalRootPaths = readAdditionalRootPaths(request._meta, request.additionalDirectories);
+        await this.refreshSkills(request.cwd);
+        await installAdditionalRootSkillMarketplaces({
+            codexClient: this.codexClient,
+            cwd: request.cwd,
+            additionalRootPaths,
+        });
+        this.additionalRootPathsBySessionId.set(request.sessionId, additionalRootPaths);
+
         const response = await this.codexClient.threadResume({
             config: await this.createSessionConfig(request.cwd, request.mcpServers ?? []),
             cwd: request.cwd,
@@ -243,7 +278,13 @@ export class CodexAcpClient {
     }
 
     async newSession(request: acp.NewSessionRequest): Promise<SessionMetadata> {
+        const additionalRootPaths = readAdditionalRootPaths(request._meta, request.additionalDirectories);
         await this.refreshSkills(request.cwd, request._meta);
+        await installAdditionalRootSkillMarketplaces({
+            codexClient: this.codexClient,
+            cwd: request.cwd,
+            additionalRootPaths,
+        });
 
         const response = await this.codexClient.threadStart({
             config: await this.createSessionConfig(request.cwd, request.mcpServers),
@@ -256,6 +297,7 @@ export class CodexAcpClient {
             throw new Error("Codex did not return any models");
         }
         const currentModelId = this.createModelId(codexModels, response.model, response.reasoningEffort).toString();
+        this.additionalRootPathsBySessionId.set(response.thread.id, additionalRootPaths);
         return {
             sessionId: response.thread.id,
             currentModelId: currentModelId,
@@ -395,7 +437,17 @@ export class CodexAcpClient {
         const input = buildPromptItems(request.prompt);
         const effort = modelId.effort as ReasoningEffort | null; //TODO remove unsafe conversion
 
+        const additionalRootPaths = mergeAdditionalRootPaths(
+            this.additionalRootPathsBySessionId.get(request.sessionId) ?? [],
+            readAdditionalRootPaths(request._meta)
+        );
+        this.additionalRootPathsBySessionId.set(request.sessionId, additionalRootPaths);
         await this.refreshSkills(cwd, request._meta);
+        await installAdditionalRootSkillMarketplaces({
+            codexClient: this.codexClient,
+            cwd,
+            additionalRootPaths,
+        });
         return await this.codexClient.runTurn({
             threadId: request.sessionId,
             input: input,
@@ -650,11 +702,11 @@ function parseSkillPath(uri: string): string | null {
         return null;
     }
 
-    return path.basename(filePath) === SKILL_FILE_NAME ? filePath : null;
+    return path.basename(filePath) === CODEX_SKILL_FILE_NAME ? filePath : null;
 }
 
 function readSkillName(block: acp.ResourceLink, skillPath: string): string | null {
-    const rawName = block.name === SKILL_FILE_NAME
+    const rawName = block.name === CODEX_SKILL_FILE_NAME
         ? path.basename(path.dirname(skillPath))
         : block.name;
     const name = rawName.trim().replace(/^\$/, "");
@@ -671,13 +723,21 @@ interface GatewayConfig {
     }
 }
 
-function readAdditionalRoots(meta: Record<string, unknown> | null | undefined): string[] {
+function readAdditionalRootPaths(
+    meta: Record<string, unknown> | null | undefined,
+    additionalDirectories: AdditionalRootPaths | undefined = undefined
+): AdditionalRootPaths {
     const rawRoots = meta?.["additionalRoots"];
-    if (!Array.isArray(rawRoots)) {
-        return [];
-    }
+    const metaRoots = Array.isArray(rawRoots) ? rawRoots : [];
+    return normalizeAdditionalRootPaths([...metaRoots, ...(additionalDirectories ?? [])]);
+}
 
-    return Array.from(new Set(rawRoots
+function mergeAdditionalRootPaths(left: AdditionalRootPaths, right: AdditionalRootPaths): AdditionalRootPaths {
+    return normalizeAdditionalRootPaths([...left, ...right]);
+}
+
+function normalizeAdditionalRootPaths(values: unknown[]): AdditionalRootPaths {
+    return Array.from(new Set(values
         .filter((value): value is string => typeof value === "string")
         .map(value => value.trim())
         .filter(value => value.length > 0)));

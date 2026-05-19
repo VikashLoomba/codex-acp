@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import {Readable, Writable} from "node:stream";
 import {expect, vi} from "vitest";
+import {CODEX_SKILL_FILE_NAME} from "../../../SkillDirectoryParser";
 import {ModelId} from "../../../ModelId";
 import {removeDirectoryWithRetry, writeCodexHomeConfig} from "../../acp-test-utils";
 import type {PermissionResponder} from "./permission-responders";
@@ -17,10 +18,19 @@ export interface TestSkill {
     readonly body: string;
 }
 
+export type CreateSessionOptions = {
+    readonly _meta?: Record<string, unknown> | null;
+    readonly additionalDirectories?: string[];
+    readonly mcpServers?: acp.McpServer[];
+};
+
 export interface SpawnedAgentFixture {
     readonly connection: acp.ClientSideConnection;
     readonly workspaceDir: string;
-    createSession(mcpServers?: acp.McpServer[]): Promise<acp.NewSessionResponse>;
+    createSession(options?: CreateSessionOptions): Promise<acp.NewSessionResponse>;
+    copyAdditionalRootFixture(name: string): string;
+    hasMarketplace(marketplaceName: string): Promise<boolean>;
+    removeMarketplace(marketplaceName: string): Promise<void>;
     restart(): Promise<SpawnedAgentFixture>;
     writeSkill(skill: TestSkill, rootDir?: string): void;
     setPermissionResponder(responder: PermissionResponder): void;
@@ -166,11 +176,40 @@ class SpawnedAgentFixtureImpl implements SpawnedAgentFixture {
         return this.paths.workspaceDir;
     }
 
-    async createSession(mcpServers: acp.McpServer[] = []): Promise<acp.NewSessionResponse> {
+    async createSession(options?: CreateSessionOptions): Promise<acp.NewSessionResponse> {
+        const sessionOptions = options ?? {};
         return await this.connection.newSession({
             cwd: this.workspaceDir,
-            mcpServers,
+            mcpServers: sessionOptions.mcpServers ?? [],
+            _meta: sessionOptions._meta ?? null,
+            additionalDirectories: sessionOptions.additionalDirectories ?? [],
         });
+    }
+
+    copyAdditionalRootFixture(name: string): string {
+        const source = path.join(process.cwd(), "src", "__tests__", "CodexACPAgent", "e2e", "data", name);
+        const destination = path.join(this.paths.rootDir, "additional-roots", name);
+        fs.mkdirSync(path.dirname(destination), {recursive: true});
+        fs.cpSync(source, destination, {recursive: true});
+        return destination;
+    }
+
+    async hasMarketplace(marketplaceName: string): Promise<boolean> {
+        const response = await this.connection.extMethod("marketplace/list", {
+            cwd: this.workspaceDir,
+            marketplaceKinds: ["local", "workspace-directory"],
+        });
+        const marketplaces = response["marketplaces"];
+        if (!Array.isArray(marketplaces)) {
+            return false;
+        }
+        return marketplaces.some((marketplace) =>
+            isRecord(marketplace) && marketplace["name"] === marketplaceName
+        );
+    }
+
+    async removeMarketplace(marketplaceName: string): Promise<void> {
+        await this.connection.extMethod("marketplace/remove", {marketplaceName});
     }
 
     async restart(): Promise<SpawnedAgentFixture> {
@@ -183,7 +222,7 @@ class SpawnedAgentFixtureImpl implements SpawnedAgentFixture {
         const skillDirectory = path.join(skillsRoot, skill.name);
         fs.mkdirSync(skillDirectory, {recursive: true});
         fs.writeFileSync(
-            path.join(skillDirectory, "SKILL.md"),
+            path.join(skillDirectory, CODEX_SKILL_FILE_NAME),
             [
                 "---",
                 `name: ${skill.name}`,
@@ -283,6 +322,10 @@ function redactLogSecrets(content: string): string {
         .replace(/("apiKey"\s*:\s*")[^"]+(")/g, "$1[REDACTED]$2")
         .replace(/("Authorization"\s*:\s*")Bearer [^"]+(")/gi, "$1Bearer [REDACTED]$2")
         .replace(/(Incorrect API key provided: )[^.,\s]+/g, "$1[REDACTED]");
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 async function waitForProcessExit(proc: ChildProcessWithoutNullStreams, timeoutMs: number): Promise<boolean> {

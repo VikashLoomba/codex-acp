@@ -65,6 +65,7 @@
     "@openai/codex": "^0.128.0",
     "diff": "^8.0.3",
     "open": "^11.0.0",
-    "vscode-jsonrpc": "^8.2.1"
+    "vscode-jsonrpc": "^8.2.1",
+    "yaml": "^2.9.0"
   }
 }

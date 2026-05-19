@@ -1,4 +1,3 @@
-import path from "node:path";
 import {afterEach, expect, it} from "vitest";
 import {AgentMode} from "../../../AgentMode";
 import {
@@ -10,6 +9,9 @@ import {
     requireLiveApiKey,
     type SpawnedAgentFixture,
 } from "./acp-e2e-test-utils";
+
+const HELLO_WORLD_ADDITIONAL_ROOT_FIXTURE = "hello-world";
+const HELLO_WORLD_MARKETPLACE_NAME = "additional-roots-hello-world";
 
 describeE2E("E2E tests", () => {
     let fixture: SpawnedAgentFixture | null = null;
@@ -128,4 +130,31 @@ describeE2E("E2E tests", () => {
             expect(text).toContain("- session-root-skill: Session root skill");
         });
     });
+
+    it("removes an additional root marketplace", async () => {
+        fixture = await createAuthenticatedFixture();
+        const additionalRoot = await prepareHelloWorldAdditionalRoot(fixture);
+        await fixture.createSession({
+            additionalDirectories: [additionalRoot],
+        });
+
+        expect(await fixture.hasMarketplace(HELLO_WORLD_MARKETPLACE_NAME)).toBe(true);
+
+        await fixture.removeMarketplace(HELLO_WORLD_MARKETPLACE_NAME);
+
+        expect(await fixture.hasMarketplace(HELLO_WORLD_MARKETPLACE_NAME)).toBe(false);
+    });
 });
+
+async function prepareHelloWorldAdditionalRoot(fixture: SpawnedAgentFixture): Promise<string> {
+    const additionalRoot = fixture.copyAdditionalRootFixture(HELLO_WORLD_ADDITIONAL_ROOT_FIXTURE);
+    await fixture.removeMarketplace(HELLO_WORLD_MARKETPLACE_NAME);
+    return additionalRoot;
+}
+
+async function expectHelloSkillListed(fixture: SpawnedAgentFixture, sessionId: string): Promise<void> {
+    await fixture.expectPromptText(sessionId, "/skills", (text) => {
+        expect(text).toContain("Available skills:");
+        expect(text).toContain("- hello: Use when the user asks for a hello world skill.");
+    });
+}

@@ -12,6 +12,8 @@ import type {
     GetAccountResponse,
     ListMcpServerStatusParams,
     ListMcpServerStatusResponse,
+    MarketplaceAddParams,
+    MarketplaceAddResponse,
     LoginAccountParams,
     LoginAccountResponse,
     LogoutAccountResponse,
@@ -21,6 +23,12 @@ import type {
     McpServerStatusUpdatedNotification,
     ModelListParams,
     ModelListResponse,
+    PluginInstallParams,
+    PluginInstallResponse,
+    PluginListParams,
+    PluginListResponse,
+    PluginReadParams,
+    PluginReadResponse,
     SkillsListParams,
     SkillsListResponse,
     ThreadLoadedListParams,
@@ -42,6 +50,8 @@ import type {
     CommandExecutionRequestApprovalResponse,
     FileChangeRequestApprovalParams,
     FileChangeRequestApprovalResponse,
+    MarketplaceRemoveParams,
+    MarketplaceRemoveResponse,
 } from "./app-server/v2";
 
 export interface ApprovalHandler {
@@ -262,6 +272,26 @@ export class CodexAppServerClient {
 
     async listSkills(params: SkillsListParams): Promise<SkillsListResponse> {
         return await this.sendRequest({ method: "skills/list", params });
+    }
+
+    async marketplaceAdd(params: MarketplaceAddParams): Promise<MarketplaceAddResponse> {
+        return await this.sendRequest({ method: "marketplace/add", params });
+    }
+
+    async marketplaceRemove(params: MarketplaceRemoveParams): Promise<MarketplaceRemoveResponse> {
+        return await this.sendRequest({ method: "marketplace/remove", params });
+    }
+
+    async pluginList(params: PluginListParams): Promise<PluginListResponse> {
+        return await this.sendRequest({ method: "plugin/list", params });
+    }
+
+    async pluginRead(params: PluginReadParams): Promise<PluginReadResponse> {
+        return await this.sendRequest({ method: "plugin/read", params });
+    }
+
+    async pluginInstall(params: PluginInstallParams): Promise<PluginInstallResponse> {
+        return await this.sendRequest({ method: "plugin/install", params });
     }
 
     /**

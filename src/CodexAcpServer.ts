@@ -147,6 +147,19 @@ export class CodexAcpServer implements acp.Agent {
                 await this.unstable_logout({});
                 return {};
             }
+            case "marketplace/list": {
+                const cwd = typeof methodRequest.params.cwd === "string" ? methodRequest.params.cwd : "";
+                const marketplaces = await this.runWithProcessCheck(() =>
+                    this.codexAcpClient.listMarketplaces(cwd, methodRequest.params.marketplaceKinds)
+                );
+                return {
+                    marketplaces: marketplaces.map((name) => ({name})),
+                };
+            }
+            case "marketplace/remove": {
+                await this.runWithProcessCheck(() => this.codexAcpClient.removeMarketplace(methodRequest.params.marketplaceName));
+                return {};
+            }
         }
     }
 
