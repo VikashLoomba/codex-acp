@@ -10,6 +10,7 @@ import {CodexAppServerClient} from "./CodexAppServerClient";
 import packageJson from "../package.json";
 import {logger} from "./Logger";
 import {runLoginCommand} from "./login";
+import {runCodexCli} from "./CodexCli";
 
 if (process.argv.includes("--version")) {
     console.log(`${packageJson.name} ${packageJson.version}`);
@@ -22,6 +23,14 @@ if (process.argv[2] === "login") {
         .then((success) => process.exit(success ? 0 : 1))
         .catch((error) => {
             console.error("Login error:", error.message);
+            process.exit(1);
+        });
+} else if (process.argv[2] === "cli") {
+    const args = process.argv.slice(3);
+    runCodexCli(process.env["CODEX_PATH"], args)
+        .then((exitCode) => process.exit(exitCode))
+        .catch((error) => {
+            console.error("Codex CLI error:", error.message);
             process.exit(1);
         });
 } else {
