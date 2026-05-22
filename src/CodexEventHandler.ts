@@ -43,12 +43,18 @@ export class CodexEventHandler {
 
     private readonly connection: acp.AgentSideConnection;
     private readonly sessionState: SessionState;
+    private readonly shouldEmitUpdate: () => boolean;
     private failure: RequestError | null = null;
     private readonly activeFuzzyFileSearchSessions = new Set<string>();
 
-    constructor(connection: acp.AgentSideConnection, sessionState: SessionState) {
+    constructor(
+        connection: acp.AgentSideConnection,
+        sessionState: SessionState,
+        shouldEmitUpdate: () => boolean = () => true
+    ) {
         this.connection = connection;
         this.sessionState = sessionState;
+        this.shouldEmitUpdate = shouldEmitUpdate;
     }
 
     getFailure(): RequestError | null {
@@ -58,7 +64,7 @@ export class CodexEventHandler {
     async handleNotification(notification: ServerNotification) {
         const session = new ACPSessionConnection(this.connection, this.sessionState.sessionId);
         const updateEvent = await this.createUpdateEvent(notification);
-        if (updateEvent) {
+        if (updateEvent && this.shouldEmitUpdate()) {
             await session.update(updateEvent);
         }
     }
@@ -86,7 +92,7 @@ export class CodexEventHandler {
                 this.sessionState.currentTurnId = notification.params.turn.id;
                 return null;
             case "turn/completed":
-                this.sessionState.currentTurnId = null;
+                this.restoreCurrentTurnAfterCompletion(notification.params.turn.id);
                 return null;
             case "thread/tokenUsage/updated":
                 return this.createUsageUpdate(notification.params);
@@ -164,6 +170,22 @@ export class CodexEventHandler {
             case "app/list/updated":
                 return null;
         }
+    }
+
+    private restoreCurrentTurnAfterCompletion(completedTurnId: string): void {
+        if (this.sessionState.currentTurnId !== completedTurnId) {
+            return;
+        }
+
+        const activePrompts = Array.from(this.sessionState.activePrompts);
+        for (let index = activePrompts.length - 1; index >= 0; index -= 1) {
+            const turnId = activePrompts[index]?.turnId;
+            if (turnId && turnId !== completedTurnId) {
+                this.sessionState.currentTurnId = turnId;
+                return;
+            }
+        }
+        this.sessionState.currentTurnId = null;
     }
 
     private async createTextEvent(event: AgentMessageDeltaNotification): Promise<UpdateSessionEvent> {

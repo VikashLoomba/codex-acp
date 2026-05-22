@@ -378,6 +378,14 @@ export class CodexAcpClient {
         this.codexClient.onElicitationRequest(sessionId, elicitationHandler);
     }
 
+    disposeSession(sessionId: string): void {
+        this.codexClient.clearSessionHandlers(sessionId);
+    }
+
+    async closeSession(sessionId: string): Promise<void> {
+        await this.codexClient.threadUnsubscribe({ threadId: sessionId });
+    }
+
     async sendPrompt(
         request: acp.PromptRequest,
         agentMode: AgentMode,
@@ -385,11 +393,29 @@ export class CodexAcpClient {
         serviceTier: ServiceTier | null,
         disableSummary: boolean,
         cwd: string,
+        onTurnStarted?: (turnId: string) => void,
+        onTurnStartRequested?: () => void,
+        isCancelled?: () => boolean,
+        cancellation?: Promise<TurnCompletedNotification>,
     ): Promise<TurnCompletedNotification> {
         const input = buildPromptItems(request.prompt);
         const effort = modelId.effort as ReasoningEffort | null; //TODO remove unsafe conversion
 
-        await this.refreshSkills(cwd, request._meta);
+        if (cancellation) {
+            const refreshResult = await Promise.race([
+                this.refreshSkills(cwd, request._meta).then(() => null),
+                cancellation,
+            ]);
+            if (refreshResult !== null) {
+                return refreshResult;
+            }
+        } else {
+            await this.refreshSkills(cwd, request._meta);
+        }
+        if (isCancelled?.()) {
+            return createInterruptedTurnCompleted(request.sessionId, "cancelled-before-turn");
+        }
+        onTurnStartRequested?.();
         return await this.codexClient.runTurn({
             threadId: request.sessionId,
             input: input,
@@ -399,7 +425,7 @@ export class CodexAcpClient {
             effort: effort,
             model: modelId.model,
             serviceTier: serviceTier,
-        });
+        }, onTurnStarted, cancellation);
     }
 
     async listSkills(params?: SkillsListParams): Promise<SkillsListResponse> {
@@ -524,6 +550,10 @@ export class CodexAcpClient {
         });
     }
 
+    resolveInterruptedTurn(params: { threadId: string, turnId: string }): void {
+        this.codexClient.resolveTurnInterrupted(params.threadId, params.turnId);
+    }
+
     async fetchAvailableModels(): Promise<Model[]> {
         const models: Model[] = [];
         let cursor: string | null = null;
@@ -573,6 +603,21 @@ export type SessionMetadata = {
 
 export type SessionMetadataWithThread = SessionMetadata & {
     thread: Thread,
+}
+
+function createInterruptedTurnCompleted(threadId: string, turnId: string): TurnCompletedNotification {
+    return {
+        threadId,
+        turn: {
+            id: turnId,
+            items: [],
+            status: "interrupted",
+            error: null,
+            startedAt: null,
+            completedAt: null,
+            durationMs: null,
+        },
+    };
 }
 
 function buildPromptItems(prompt: acp.ContentBlock[]): UserInput[] {

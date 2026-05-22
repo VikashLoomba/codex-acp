@@ -112,9 +112,15 @@ export class CodexElicitationHandler implements ElicitationHandler {
     async handleElicitation(
         params: McpServerElicitationRequestParams
     ): Promise<McpServerElicitationRequestResponse> {
+        if (this.sessionState.closed) {
+            return { action: "cancel", content: null, _meta: null };
+        }
         try {
             const { request, correlatedCallId } = this.buildPermissionRequest(params);
-            const response = await this.connection.requestPermission(request);
+            const response = await this.requestPermissionUntilClose(request);
+            if (response === null) {
+                return { action: "cancel", content: null, _meta: null };
+            }
             if (correlatedCallId !== undefined && response.outcome.outcome !== "cancelled") {
                 const optionId = response.outcome.optionId;
                 if (optionId !== "decline") {
@@ -129,6 +135,19 @@ export class CodexElicitationHandler implements ElicitationHandler {
             logger.error("Error handling MCP elicitation request", error);
             return { action: "cancel", content: null, _meta: null };
         }
+    }
+
+    private async requestPermissionUntilClose(
+        request: acp.RequestPermissionRequest
+    ): Promise<acp.RequestPermissionResponse | null> {
+        const response = await Promise.race([
+            Promise.resolve(this.connection.requestPermission(request)),
+            this.sessionState.closeSignal.then(() => null),
+        ]);
+        if (response === null || this.sessionState.closed) {
+            return null;
+        }
+        return response;
     }
 
     private buildPermissionRequest(

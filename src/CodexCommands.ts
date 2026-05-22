@@ -23,9 +23,12 @@ export class CodexCommands {
         this.runWithProcessCheck = runWithProcessCheck;
     }
 
-    async publish(sessionId: string): Promise<void> {
+    async publish(sessionId: string, shouldPublish: () => boolean = () => true): Promise<void> {
         try {
             const skillsResponse = await this.runWithProcessCheck(() => this.codexAcpClient.listSkills());
+            if (!shouldPublish()) {
+                return;
+            }
             const availableCommands = this.buildAvailableCommands(skillsResponse?.data ?? []);
             if (availableCommands.length === 0) {
                 return;
@@ -108,10 +111,12 @@ export class CodexCommands {
     async tryHandleCommand(prompt: acp.ContentBlock[], sessionState: SessionState): Promise<boolean> {
         const commandName = this.getCommandName(prompt)
         if (commandName === null) return false;
+        if (sessionState.closed) return true;
 
         const sessionId = sessionState.sessionId;
         switch (commandName) {
             case "status": {
+                if (sessionState.closed) return true;
                 const session = new ACPSessionConnection(this.connection, sessionId);
                 const message = this.buildStatusMessage(sessionState);
                 await session.update({
@@ -122,6 +127,7 @@ export class CodexCommands {
             }
             case "logout": {
                 await this.runWithProcessCheck(() => this.codexAcpClient.logout());
+                if (sessionState.closed) return true;
                 const session = new ACPSessionConnection(this.connection, sessionId);
                 await session.update({
                     sessionUpdate: "agent_message_chunk",
@@ -131,6 +137,7 @@ export class CodexCommands {
             }
             case "skills": {
                 const response = await this.runWithProcessCheck(() => this.codexAcpClient.listSkills());
+                if (sessionState.closed) return true;
                 const skills = (response?.data ?? []).flatMap(entry => entry.skills);
                 const lines = skills.map(skill => {
                     const description = skill.shortDescription ?? skill.description ?? "";
@@ -148,6 +155,7 @@ export class CodexCommands {
             }
             case "mcp": {
                 const servers = await this.runWithProcessCheck(() => this.codexAcpClient.listMcpServers());
+                if (sessionState.closed) return true;
                 const configuredServers = servers.data.map(server => {
                     const toolCount = Object.keys(server.tools ?? {}).length;
                     const resourceCount = (server.resources ?? []).length;
@@ -168,6 +176,7 @@ export class CodexCommands {
                 return true;
             }
             default:
+                if (sessionState.closed) return true;
                 await this.sendUnknownCommandMessage(commandName, sessionId);
                 return true;
         }

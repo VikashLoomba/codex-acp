@@ -7,7 +7,7 @@ import {type CodexAuthRequest, getCodexAuthMethods} from "./CodexAuthMethod";
 import {CodexAcpClient, type SessionMetadata, type SessionMetadataWithThread} from "./CodexAcpClient";
 import type {McpStartupResult} from "./CodexAppServerClient";
 import {ACPSessionConnection, type UpdateSessionEvent} from "./ACPSessionConnection";
-import type {InputModality, ReasoningEffort} from "./app-server";
+import type {InputModality, ReasoningEffort, ServerNotification} from "./app-server";
 import type {
     Account,
     CollabAgentToolCallStatus,
@@ -15,6 +15,7 @@ import type {
     ReasoningEffortOption,
     Thread,
     ThreadItem,
+    TurnCompletedNotification,
     UserInput
 } from "./app-server/v2";
 import type {RateLimitsMap} from "./RateLimitsMap";
@@ -57,12 +58,34 @@ export interface SessionState {
     cwd: string;
     fastModeEnabled: boolean;
     currentModelSupportsFast: boolean;
+    closed: boolean;
+    closeSignal: Promise<void>;
+    resolveCloseSignal: () => void;
+    activePrompts: Set<ActivePrompt>;
+    interruptedTurnIds: Set<string>;
+    turnInterruptionAttempts: Map<string, Promise<boolean>>;
     sessionMcpServers?: Array<string>;
+}
+
+interface ActivePrompt {
+    turnId: string | null;
+    turnStartRequested: boolean;
+    turnStartResponded: boolean;
+    cancelled: boolean;
+    cancellation: Promise<void>;
+    resolveCancellation: () => void;
+    completion: Promise<void>;
+    resolveCompletion: () => void;
 }
 
 interface PendingMcpStartupSession {
     requestedServers: Set<string>;
     afterVersion: number;
+}
+
+interface PendingSessionOpen {
+    count: number;
+    closeRequested: boolean;
 }
 
 export class CodexAcpServer implements acp.Agent {
@@ -74,6 +97,7 @@ export class CodexAcpServer implements acp.Agent {
 
     private readonly sessions: Map<string, SessionState>;
     private readonly pendingMcpStartupSessions: Map<string, PendingMcpStartupSession>;
+    private readonly pendingSessionOpens: Map<string, PendingSessionOpen>;
 
     constructor(
         connection: acp.AgentSideConnection,
@@ -83,6 +107,7 @@ export class CodexAcpServer implements acp.Agent {
     ) {
         this.sessions = new Map();
         this.pendingMcpStartupSessions = new Map();
+        this.pendingSessionOpens = new Map();
         this.connection = connection;
         this.codexAcpClient = codexAcpClient;
         this.defaultAuthRequest = defaultAuthRequest ?? null;
@@ -116,7 +141,8 @@ export class CodexAcpServer implements acp.Agent {
                 },
                 sessionCapabilities: {
                     resume: { },
-                    list: { }
+                    list: { },
+                    close: { },
                 },
                 mcpCapabilities: {
                     acp: false,
@@ -161,58 +187,73 @@ export class CodexAcpServer implements acp.Agent {
     }
 
     async getOrCreateSession(request: acp.NewSessionRequest | acp.ResumeSessionRequest): Promise<[SessionId, SessionModelState, SessionModeState]> {
-        await this.checkAuthorization();
-        const requestedMcpServers = request.mcpServers ?? [];
-        const mcpServerStartupVersion = requestedMcpServers.length > 0
-            ? this.codexAcpClient.getMcpServerStartupVersion()
-            : null;
+        const openingSessionId = "sessionId" in request ? request.sessionId : null;
+        const openingSessionState = openingSessionId
+            ? this.beginOpeningSession(openingSessionId)
+            : undefined;
+        try {
+            await this.checkAuthorization();
+            const requestedMcpServers = request.mcpServers ?? [];
+            const mcpServerStartupVersion = requestedMcpServers.length > 0
+                ? this.codexAcpClient.getMcpServerStartupVersion()
+                : null;
 
-        let sessionMetadata: SessionMetadata;
-        if ("sessionId" in request) {
-            logger.log(`Resume existing session: ${request.sessionId}...`)
-            sessionMetadata = await this.runWithProcessCheck(() => this.codexAcpClient.resumeSession(request));
-        } else {
-            logger.log(`Create new session...`)
-            sessionMetadata = await this.runWithProcessCheck(() => this.codexAcpClient.newSession(request));
+            let sessionMetadata: SessionMetadata;
+            if ("sessionId" in request) {
+                logger.log(`Resume existing session: ${request.sessionId}...`)
+                sessionMetadata = await this.runWithProcessCheck(() => this.codexAcpClient.resumeSession(request));
+            } else {
+                logger.log(`Create new session...`)
+                sessionMetadata = await this.runWithProcessCheck(() => this.codexAcpClient.newSession(request));
+            }
+
+            const account = await this.getActiveAccount();
+            const {sessionId, currentModelId, models} = sessionMetadata;
+            const sessionMcpServers = this.resolveSessionMcpServers(requestedMcpServers, "sessionId" in request);
+            const currentModel = this.findCurrentModel(models, currentModelId);
+            const currentModelSupportsFast = modelSupportsFast(currentModel);
+            const sessionState: SessionState = {
+                sessionId: sessionId,
+                currentModelId: currentModelId,
+                supportedReasoningEfforts: currentModel?.supportedReasoningEfforts ?? [],
+                supportedInputModalities: currentModel?.inputModalities ?? ["text", "image"],
+                agentMode: AgentMode.getInitialAgentMode(),
+                currentTurnId: null,
+                lastTokenUsage: null,
+                totalTokenUsage: null,
+                modelContextWindow: null,
+                rateLimits: null,
+                account: account,
+                cwd: request.cwd,
+                fastModeEnabled: sessionMetadata.currentServiceTier === "fast",
+                currentModelSupportsFast: currentModelSupportsFast,
+                closed: false,
+                ...this.createCloseSignal(),
+                activePrompts: new Set(),
+                interruptedTurnIds: new Set(),
+                turnInterruptionAttempts: new Map(),
+                sessionMcpServers: sessionMcpServers,
+            }
+            await this.installSessionStateWhileOpening(sessionState, openingSessionState, "sessionId" in request);
+
+            if (requestedMcpServers.length > 0 && mcpServerStartupVersion !== null) {
+                this.pendingMcpStartupSessions.set(sessionId, {
+                    requestedServers: new Set(requestedMcpServers.map(server => server.name)),
+                    afterVersion: mcpServerStartupVersion,
+                });
+                this.publishMcpStartupStatusAsync(sessionState);
+            }
+
+            this.publishAvailableCommandsAsync(sessionState);
+            const sessionModelState: SessionModelState = this.createModelState(models, currentModelId);
+            const sessionModeState: SessionModeState = sessionState.agentMode.toSessionModeState();
+
+            return [sessionId, sessionModelState, sessionModeState];
+        } finally {
+            if (openingSessionId) {
+                this.finishOpeningSession(openingSessionId);
+            }
         }
-
-        const account = await this.getActiveAccount();
-        const {sessionId, currentModelId, models} = sessionMetadata;
-        const sessionMcpServers = this.resolveSessionMcpServers(requestedMcpServers, "sessionId" in request);
-        const currentModel = this.findCurrentModel(models, currentModelId);
-        const currentModelSupportsFast = modelSupportsFast(currentModel);
-        const sessionState: SessionState = {
-            sessionId: sessionId,
-            currentModelId: currentModelId,
-            supportedReasoningEfforts: currentModel?.supportedReasoningEfforts ?? [],
-            supportedInputModalities: currentModel?.inputModalities ?? ["text", "image"],
-            agentMode: AgentMode.getInitialAgentMode(),
-            currentTurnId: null,
-            lastTokenUsage: null,
-            totalTokenUsage: null,
-            modelContextWindow: null,
-            rateLimits: null,
-            account: account,
-            cwd: request.cwd,
-            fastModeEnabled: sessionMetadata.currentServiceTier === "fast",
-            currentModelSupportsFast: currentModelSupportsFast,
-            sessionMcpServers: sessionMcpServers,
-        }
-        this.sessions.set(sessionId, sessionState);
-
-        if (requestedMcpServers.length > 0 && mcpServerStartupVersion !== null) {
-            this.pendingMcpStartupSessions.set(sessionId, {
-                requestedServers: new Set(requestedMcpServers.map(server => server.name)),
-                afterVersion: mcpServerStartupVersion,
-            });
-            this.publishMcpStartupStatusAsync(sessionId);
-        }
-
-        this.publishAvailableCommandsAsync(sessionId);
-        const sessionModelState: SessionModelState = this.createModelState(models, currentModelId);
-        const sessionModeState: SessionModeState = sessionState.agentMode.toSessionModeState();
-
-        return [sessionId, sessionModelState, sessionModeState];
     }
 
     private async getActiveAccount(){
@@ -230,9 +271,12 @@ export class CodexAcpServer implements acp.Agent {
             modelState,
             modeState,
             thread,
+            sessionState,
         } = await this.getOrCreateSessionWithHistory(params);
 
-        await this.streamThreadHistory(sessionId, thread);
+        this.assertSessionStateOpen(sessionState);
+        await this.streamThreadHistory(sessionState, thread);
+        this.assertSessionStateOpen(sessionState);
 
         logger.log("Session loaded", {
             sessionId: sessionId,
@@ -242,7 +286,7 @@ export class CodexAcpServer implements acp.Agent {
         return {
             models: modelState,
             modes: modeState,
-            configOptions: this.createSessionConfigOptions(this.getSessionState(sessionId)),
+            configOptions: this.createSessionConfigOptions(sessionState),
         };
     }
 
@@ -266,6 +310,139 @@ export class CodexAcpServer implements acp.Agent {
         logger.log("Listing sessions...", {cwd: params.cwd, cursor: params.cursor});
         await this.checkAuthorization();
         return await this.runWithProcessCheck(() => this.codexAcpClient.listSessions(params));
+    }
+
+    async closeSession(params: acp.CloseSessionRequest): Promise<acp.CloseSessionResponse> {
+        logger.log("Close session requested", {sessionId: params.sessionId});
+        const pendingOpenClosed = this.markOpeningSessionClosed(params.sessionId);
+        const sessionState = this.sessions.get(params.sessionId);
+        if (!sessionState) {
+            logger.log(
+                pendingOpenClosed ? "Close session recorded for pending open" : "Close session ignored: session not found",
+                {sessionId: params.sessionId}
+            );
+            return {};
+        }
+
+        this.markSessionClosed(sessionState);
+        const activePrompts = Array.from(sessionState.activePrompts);
+        try {
+            await Promise.all(activePrompts.map((activePrompt) => this.interruptActivePrompt(
+                params.sessionId,
+                sessionState,
+                activePrompt,
+                "Close session"
+            )));
+            await Promise.all(activePrompts.map((activePrompt) => activePrompt.completion));
+            if (this.sessions.get(params.sessionId) === sessionState) {
+                await this.runWithProcessCheck(() => this.codexAcpClient.closeSession(params.sessionId));
+            }
+        } finally {
+            this.cleanupClosedSession(params.sessionId, sessionState);
+        }
+
+        logger.log("Session closed", {sessionId: params.sessionId});
+        return {};
+    }
+
+    private isSessionStateOpen(sessionState: SessionState): boolean {
+        return this.sessions.get(sessionState.sessionId) === sessionState && !sessionState.closed;
+    }
+
+    private beginOpeningSession(sessionId: string): SessionState | undefined {
+        const sessionState = this.sessions.get(sessionId);
+        if (sessionState?.closed) {
+            throw RequestError.invalidRequest(`Session ${sessionId} is closing`);
+        }
+        const pendingOpen = this.pendingSessionOpens.get(sessionId);
+        if (pendingOpen?.closeRequested) {
+            throw RequestError.invalidRequest(`Session ${sessionId} is closing`);
+        }
+        if (pendingOpen) {
+            pendingOpen.count += 1;
+        } else {
+            this.pendingSessionOpens.set(sessionId, {
+                count: 1,
+                closeRequested: false,
+            });
+        }
+        return sessionState;
+    }
+
+    private finishOpeningSession(sessionId: string): void {
+        const pendingOpen = this.pendingSessionOpens.get(sessionId);
+        if (!pendingOpen) {
+            return;
+        }
+
+        pendingOpen.count -= 1;
+        if (pendingOpen.count <= 0) {
+            this.pendingSessionOpens.delete(sessionId);
+        }
+    }
+
+    private markOpeningSessionClosed(sessionId: string): boolean {
+        const pendingOpen = this.pendingSessionOpens.get(sessionId);
+        if (!pendingOpen) {
+            return false;
+        }
+        pendingOpen.closeRequested = true;
+        return true;
+    }
+
+    private isOpeningSessionClosing(sessionId: string): boolean {
+        return this.pendingSessionOpens.get(sessionId)?.closeRequested ?? false;
+    }
+
+    private shouldRejectOpeningSession(
+        sessionId: string,
+        openingSessionState: SessionState | undefined,
+    ): boolean {
+        const sessionState = this.sessions.get(sessionId);
+        return (
+            this.isOpeningSessionClosing(sessionId)
+            || sessionState?.closed
+            || (openingSessionState !== undefined && sessionState !== openingSessionState)
+        );
+    }
+
+    private async installSessionStateWhileOpening(
+        sessionState: SessionState,
+        openingSessionState: SessionState | undefined,
+        unsubscribeRejectedSession: boolean
+    ): Promise<void> {
+        const sessionId = sessionState.sessionId;
+        if (this.shouldRejectOpeningSession(sessionId, openingSessionState)) {
+            if (unsubscribeRejectedSession) {
+                await this.unsubscribeRejectedSession(sessionId);
+            }
+            throw RequestError.invalidRequest(`Session ${sessionId} is closing`);
+        }
+        this.sessions.set(sessionId, sessionState);
+    }
+
+    private async unsubscribeRejectedSession(sessionId: string): Promise<void> {
+        try {
+            await this.runWithProcessCheck(() => this.codexAcpClient.closeSession(sessionId));
+        } catch (err) {
+            logger.error(`Failed to unsubscribe rejected session ${sessionId}`, err);
+        }
+    }
+
+    private assertSessionStateOpen(sessionState: SessionState): void {
+        if (!this.isSessionStateOpen(sessionState)) {
+            throw RequestError.invalidRequest(`Session ${sessionState.sessionId} is closed`);
+        }
+    }
+
+    private cleanupClosedSession(sessionId: string, sessionState: SessionState): void {
+        if (this.sessions.get(sessionId) !== sessionState) {
+            return;
+        }
+
+        this.sessions.delete(sessionId);
+        this.pendingMcpStartupSessions.delete(sessionId);
+        this.codexAcpClient.disposeSession(sessionId);
     }
 
     async newSession(
@@ -393,8 +570,11 @@ export class CodexAcpServer implements acp.Agent {
         ];
     }
 
-    private publishAvailableCommandsAsync(sessionId: string) {
-        void this.availableCommands.publish(sessionId);
+    private publishAvailableCommandsAsync(sessionState: SessionState) {
+        void this.availableCommands.publish(
+            sessionState.sessionId,
+            () => this.isSessionStateOpen(sessionState)
+        );
     }
 
     private findCurrentModel(models: Model[], currentModelId: string): Model | undefined {
@@ -424,68 +604,87 @@ export class CodexAcpServer implements acp.Agent {
         modelState: SessionModelState;
         modeState: SessionModeState;
         thread: Thread;
+        sessionState: SessionState;
     }> {
-        await this.checkAuthorization();
-        const requestedMcpServers = request.mcpServers ?? [];
-        const mcpServerStartupVersion = requestedMcpServers.length > 0
-            ? this.codexAcpClient.getMcpServerStartupVersion()
-            : null;
+        const openingSessionState = this.beginOpeningSession(request.sessionId);
+        try {
+            await this.checkAuthorization();
+            const requestedMcpServers = request.mcpServers ?? [];
+            const mcpServerStartupVersion = requestedMcpServers.length > 0
+                ? this.codexAcpClient.getMcpServerStartupVersion()
+                : null;
 
-        logger.log(`Load existing session: ${request.sessionId}...`);
-        const sessionMetadata: SessionMetadataWithThread = await this.runWithProcessCheck(() =>
-            this.codexAcpClient.loadSession(request)
-        );
+            logger.log(`Load existing session: ${request.sessionId}...`);
+            const sessionMetadata: SessionMetadataWithThread = await this.runWithProcessCheck(() =>
+                this.codexAcpClient.loadSession(request)
+            );
 
-        const account = await this.getActiveAccount();
-        const {sessionId, currentModelId, models, thread} = sessionMetadata;
-        const sessionMcpServers = this.resolveSessionMcpServers(requestedMcpServers, true);
-        const currentModel = this.findCurrentModel(models, currentModelId);
-        const currentModelSupportsFast = modelSupportsFast(currentModel);
-        const sessionState: SessionState = {
-            sessionId: sessionId,
-            currentModelId: currentModelId,
-            supportedReasoningEfforts: currentModel?.supportedReasoningEfforts ?? [],
-            supportedInputModalities: currentModel?.inputModalities ?? ["text", "image"],
-            agentMode: AgentMode.getInitialAgentMode(),
-            currentTurnId: null,
-            lastTokenUsage: null,
-            totalTokenUsage: null,
-            modelContextWindow: null,
-            rateLimits: null,
-            account: account,
-            cwd: request.cwd,
-            fastModeEnabled: sessionMetadata.currentServiceTier === "fast",
-            currentModelSupportsFast: currentModelSupportsFast,
-            sessionMcpServers: sessionMcpServers,
-        };
-        this.sessions.set(sessionId, sessionState);
+            const account = await this.getActiveAccount();
+            const {sessionId, currentModelId, models, thread} = sessionMetadata;
+            const sessionMcpServers = this.resolveSessionMcpServers(requestedMcpServers, true);
+            const currentModel = this.findCurrentModel(models, currentModelId);
+            const currentModelSupportsFast = modelSupportsFast(currentModel);
+            const sessionState: SessionState = {
+                sessionId: sessionId,
+                currentModelId: currentModelId,
+                supportedReasoningEfforts: currentModel?.supportedReasoningEfforts ?? [],
+                supportedInputModalities: currentModel?.inputModalities ?? ["text", "image"],
+                agentMode: AgentMode.getInitialAgentMode(),
+                currentTurnId: null,
+                lastTokenUsage: null,
+                totalTokenUsage: null,
+                modelContextWindow: null,
+                rateLimits: null,
+                account: account,
+                cwd: request.cwd,
+                fastModeEnabled: sessionMetadata.currentServiceTier === "fast",
+                currentModelSupportsFast: currentModelSupportsFast,
+                closed: false,
+                ...this.createCloseSignal(),
+                activePrompts: new Set(),
+                interruptedTurnIds: new Set(),
+                turnInterruptionAttempts: new Map(),
+                sessionMcpServers: sessionMcpServers,
+            };
+            await this.installSessionStateWhileOpening(sessionState, openingSessionState, true);
 
-        if (requestedMcpServers.length > 0 && mcpServerStartupVersion !== null) {
-            this.pendingMcpStartupSessions.set(sessionId, {
-                requestedServers: new Set(requestedMcpServers.map(server => server.name)),
-                afterVersion: mcpServerStartupVersion,
-            });
-            this.publishMcpStartupStatusAsync(sessionId);
+            if (requestedMcpServers.length > 0 && mcpServerStartupVersion !== null) {
+                this.pendingMcpStartupSessions.set(sessionId, {
+                    requestedServers: new Set(requestedMcpServers.map(server => server.name)),
+                    afterVersion: mcpServerStartupVersion,
+                });
+                this.publishMcpStartupStatusAsync(sessionState);
+            }
+
+            await this.availableCommands.publish(
+                sessionId,
+                () => this.isSessionStateOpen(sessionState)
+            );
+            this.assertSessionStateOpen(sessionState);
+            const sessionModelState: SessionModelState = this.createModelState(models, currentModelId);
+            const sessionModeState: SessionModeState = sessionState.agentMode.toSessionModeState();
+
+            return {
+                sessionId: sessionId,
+                modelState: sessionModelState,
+                modeState: sessionModeState,
+                thread: thread,
+                sessionState: sessionState,
+            };
+        } finally {
+            this.finishOpeningSession(request.sessionId);
         }
-
-        await this.availableCommands.publish(sessionId);
-        const sessionModelState: SessionModelState = this.createModelState(models, currentModelId);
-        const sessionModeState: SessionModeState = sessionState.agentMode.toSessionModeState();
-
-        return {
-            sessionId: sessionId,
-            modelState: sessionModelState,
-            modeState: sessionModeState,
-            thread: thread,
-        };
     }
 
-    private async streamThreadHistory(sessionId: string, thread: Thread): Promise<void> {
+    private async streamThreadHistory(sessionState: SessionState, thread: Thread): Promise<void> {
+        const sessionId = sessionState.sessionId;
         const session = new ACPSessionConnection(this.connection, sessionId);
         for (const turn of thread.turns) {
             for (const item of turn.items) {
+                this.assertSessionStateOpen(sessionState);
                 const updates = await this.createHistoryUpdates(item);
                 for (const update of updates) {
+                    this.assertSessionStateOpen(sessionState);
                     await session.update(update);
                 }
             }
@@ -730,11 +929,12 @@ export class CodexAcpServer implements acp.Agent {
         return [];
     }
 
-    private publishMcpStartupStatusAsync(sessionId: string): void {
-        void this.doPublishMcpStartupStatus(sessionId);
+    private publishMcpStartupStatusAsync(sessionState: SessionState): void {
+        void this.doPublishMcpStartupStatus(sessionState);
     }
 
-    private async doPublishMcpStartupStatus(sessionId: string): Promise<void> {
+    private async doPublishMcpStartupStatus(sessionState: SessionState): Promise<void> {
+        const sessionId = sessionState.sessionId;
         const pendingStartup = this.pendingMcpStartupSessions.get(sessionId);
         if (!pendingStartup) {
             return;
@@ -747,19 +947,28 @@ export class CodexAcpServer implements acp.Agent {
                     pendingStartup.afterVersion,
                 )
             );
-            await this.publishMcpStartupStatus(sessionId, mcpStartup, pendingStartup.requestedServers);
+            if (!this.isSessionStateOpen(sessionState)) {
+                return;
+            }
+            await this.publishMcpStartupStatus(sessionState, mcpStartup, pendingStartup.requestedServers);
         } catch (err) {
             logger.error(`Failed to publish MCP startup status for session ${sessionId}`, err);
         } finally {
-            this.pendingMcpStartupSessions.delete(sessionId);
+            if (this.sessions.get(sessionId) === sessionState) {
+                this.pendingMcpStartupSessions.delete(sessionId);
+            }
         }
     }
 
     private async publishMcpStartupStatus(
-        sessionId: string,
+        sessionState: SessionState,
         mcpStartup: McpStartupResult,
         requestedServers?: Set<string>
     ): Promise<void> {
+        if (!this.isSessionStateOpen(sessionState)) {
+            return;
+        }
+        const sessionId = sessionState.sessionId;
         const filteredStartup = requestedServers
             ? {
                 ready: mcpStartup.ready.filter(server => requestedServers.has(server)),
@@ -769,6 +978,9 @@ export class CodexAcpServer implements acp.Agent {
             : mcpStartup;
 
         for (const update of CodexEventHandler.createMcpStartupUpdates(filteredStartup)) {
+            if (!this.isSessionStateOpen(sessionState)) {
+                return;
+            }
             await this.connection.sessionUpdate({
                 sessionId,
                 update,
@@ -782,15 +994,29 @@ export class CodexAcpServer implements acp.Agent {
             prompt: params.prompt,
         });
         const sessionState = this.getSessionState(params.sessionId);
-        sessionState.currentTurnId = null;
+        if (sessionState.closed) {
+            throw RequestError.invalidRequest(`Session ${params.sessionId} is closed`);
+        }
+        const activePrompt = this.createActivePrompt();
+        sessionState.activePrompts.add(activePrompt);
+        if (sessionState.activePrompts.size === 1) {
+            sessionState.currentTurnId = null;
+        }
         sessionState.lastTokenUsage = null;
 
         try {
-            const eventHandler = new CodexEventHandler(this.connection, sessionState);
+            const eventHandler = new CodexEventHandler(
+                this.connection,
+                sessionState,
+                () => this.canEmitPromptUpdate(sessionState)
+            );
             const approvalHandler = new CodexApprovalHandler(this.connection, sessionState);
             const elicitationHandler = new CodexElicitationHandler(this.connection, sessionState);
             await this.codexAcpClient.subscribeToSessionEvents(params.sessionId,
                 (event) => {
+                    if (sessionState.closed) {
+                        return this.handleClosingPromptNotification(sessionState, eventHandler, event);
+                    }
                     elicitationHandler.handleNotification(event);
                     return eventHandler.handleNotification(event);
                 },
@@ -799,6 +1025,9 @@ export class CodexAcpServer implements acp.Agent {
 
             if (await this.availableCommands.tryHandleCommand(params.prompt, sessionState)) {
                 logger.log("Prompt handled by a command");
+                if (activePrompt.cancelled) {
+                    return this.createCancelledPromptResponse(sessionState);
+                }
                 return {
                     stopReason: "end_turn",
                     usage: this.buildPromptUsage(sessionState.lastTokenUsage),
@@ -826,26 +1055,37 @@ export class CodexAcpServer implements acp.Agent {
                 sessionState.fastModeEnabled,
                 sessionState.currentModelSupportsFast,
             );
-            const turnCompleted = await this.runWithProcessCheck(
-                () => this.codexAcpClient.sendPrompt(params, agentMode, modelId, serviceTier, disableSummary, sessionState.cwd));
+            const promptCancellation = activePrompt.cancellation.then(() =>
+                this.createInterruptedTurnCompleted(params.sessionId, "cancelled-before-turn")
+            );
+            const turnCompleted = await this.runWithProcessCheck(() => this.codexAcpClient.sendPrompt(
+                params,
+                agentMode,
+                modelId,
+                serviceTier,
+                disableSummary,
+                sessionState.cwd,
+                (turnId) => this.handlePromptTurnStarted(params.sessionId, sessionState, activePrompt, turnId),
+                () => this.handlePromptTurnStartRequested(activePrompt),
+                () => activePrompt.cancelled,
+                promptCancellation,
+            ));
 
             // Check if turn was interrupted (cancelled)
             if (turnCompleted.turn.status === "interrupted") {
-                await this.connection.sessionUpdate({
-                    sessionId: params.sessionId,
-                    update: {
-                        sessionUpdate: "agent_message_chunk",
-                        content: {
-                            type: "text",
-                            text: "*Conversation interrupted*"
+                if (this.isSessionStateOpen(sessionState) && (!activePrompt.cancelled || activePrompt.turnId)) {
+                    await this.connection.sessionUpdate({
+                        sessionId: params.sessionId,
+                        update: {
+                            sessionUpdate: "agent_message_chunk",
+                            content: {
+                                type: "text",
+                                text: "*Conversation interrupted*"
+                            }
                         }
-                    }
-                });
-                return {
-                    stopReason: "cancelled",
-                    usage: this.buildPromptUsage(sessionState.lastTokenUsage),
-                    _meta: this.buildQuotaMeta(sessionState),
-                };
+                    });
+                }
+                return this.createCancelledPromptResponse(sessionState);
             }
 
             const error = eventHandler.getFailure()
@@ -864,7 +1104,9 @@ export class CodexAcpServer implements acp.Agent {
             throw err;
         } finally {
             logger.log("Prompt completed", {sessionId: params.sessionId});
-            sessionState.currentTurnId = null;
+            sessionState.activePrompts.delete(activePrompt);
+            sessionState.currentTurnId = this.latestActiveTurnId(sessionState);
+            activePrompt.resolveCompletion();
         }
     }
 
@@ -894,6 +1136,29 @@ export class CodexAcpServer implements acp.Agent {
         return toPromptUsage(lastTokenUsage);
     }
 
+    private createCancelledPromptResponse(sessionState: SessionState): acp.PromptResponse {
+        return {
+            stopReason: "cancelled",
+            usage: this.buildPromptUsage(sessionState.lastTokenUsage),
+            _meta: this.buildQuotaMeta(sessionState),
+        };
+    }
+
+    private createInterruptedTurnCompleted(threadId: string, turnId: string): TurnCompletedNotification {
+        return {
+            threadId,
+            turn: {
+                id: turnId,
+                items: [],
+                status: "interrupted",
+                error: null,
+                startedAt: null,
+                completedAt: null,
+                durationMs: null,
+            },
+        };
+    }
+
     private async runWithProcessCheck<T>(operation: () => Promise<T>): Promise<T> {
         try {
             return await operation();
@@ -907,6 +1172,225 @@ export class CodexAcpServer implements acp.Agent {
                 throw new RequestError(requestErrorCode, `Codex process has exited with code ${exitCode}`);
             }
             throw err;
+        }
+    }
+
+    private createActivePrompt(): ActivePrompt {
+        let resolveCancellation!: () => void;
+        const cancellation = new Promise<void>((resolve) => {
+            resolveCancellation = resolve;
+        });
+        let resolveCompletion!: () => void;
+        const completion = new Promise<void>((resolve) => {
+            resolveCompletion = resolve;
+        });
+        return {
+            turnId: null,
+            turnStartRequested: false,
+            turnStartResponded: false,
+            cancelled: false,
+            cancellation,
+            resolveCancellation,
+            completion,
+            resolveCompletion,
+        };
+    }
+
+    private createCloseSignal(): Pick<SessionState, "closeSignal" | "resolveCloseSignal"> {
+        let resolveCloseSignal!: () => void;
+        const closeSignal = new Promise<void>((resolve) => {
+            resolveCloseSignal = resolve;
+        });
+        return { closeSignal, resolveCloseSignal };
+    }
+
+    private markSessionClosed(sessionState: SessionState): void {
+        if (sessionState.closed) {
+            return;
+        }
+        sessionState.closed = true;
+        sessionState.resolveCloseSignal();
+    }
+
+    private cancelActivePrompt(activePrompt: ActivePrompt): void {
+        if (activePrompt.cancelled) {
+            return;
+        }
+        activePrompt.cancelled = true;
+        activePrompt.resolveCancellation();
+    }
+
+    private latestActiveTurnId(sessionState: SessionState): string | null {
+        const activePrompts = Array.from(sessionState.activePrompts);
+        for (let index = activePrompts.length - 1; index >= 0; index -= 1) {
+            const turnId = activePrompts[index]?.turnId;
+            if (turnId) {
+                return turnId;
+            }
+        }
+        return null;
+    }
+
+    private handlePromptTurnStarted(
+        sessionId: string,
+        sessionState: SessionState,
+        activePrompt: ActivePrompt,
+        turnId: string
+    ): void {
+        activePrompt.turnStartResponded = true;
+        activePrompt.turnId = turnId;
+        sessionState.currentTurnId = turnId;
+        if (sessionState.closed) {
+            void this.interruptActivePrompt(sessionId, sessionState, activePrompt, "Close session");
+        }
+    }
+
+    private handlePromptTurnStartRequested(activePrompt: ActivePrompt): void {
+        activePrompt.turnStartRequested = true;
+    }
+
+    private canEmitPromptUpdate(sessionState: SessionState): boolean {
+        const currentSessionState = this.sessions.get(sessionState.sessionId);
+        return !sessionState.closed && (
+            currentSessionState === undefined
+            || currentSessionState === sessionState
+        );
+    }
+
+    private async handleClosingPromptNotification(
+        sessionState: SessionState,
+        eventHandler: CodexEventHandler,
+        event: ServerNotification
+    ): Promise<void> {
+        if (event.method === "turn/started") {
+            sessionState.currentTurnId = event.params.turn.id;
+            await this.interruptPromptsWithObservedTurn(sessionState);
+        } else if (event.method === "turn/completed") {
+            await eventHandler.handleNotification(event);
+        }
+    }
+
+    private async interruptPromptsWithObservedTurn(sessionState: SessionState): Promise<void> {
+        const turnId = this.unassignedCurrentTurnId(sessionState);
+        if (!turnId) {
+            return;
+        }
+
+        const pendingPrompts = this.unassignedTurnStartPrompts(sessionState);
+        if (pendingPrompts.length === 1) {
+            await this.interruptActivePrompt(
+                sessionState.sessionId,
+                sessionState,
+                pendingPrompts[0]!,
+                "Close session"
+            );
+        } else {
+            const interrupted = await this.interruptTurnOnce(sessionState, turnId, "Close session");
+            if (!interrupted) {
+                this.resolveFailedTurnInterruption(sessionState, turnId);
+                for (const activePrompt of pendingPrompts) {
+                    this.cancelActivePrompt(activePrompt);
+                }
+            }
+        }
+    }
+
+    private async interruptActivePrompt(
+        sessionId: string,
+        sessionState: SessionState,
+        activePrompt: ActivePrompt,
+        reason: string
+    ): Promise<void> {
+        if (
+            !activePrompt.turnId
+            && activePrompt.turnStartRequested
+            && this.unassignedTurnStartPrompts(sessionState).length === 1
+        ) {
+            activePrompt.turnId = this.unassignedCurrentTurnId(sessionState);
+        }
+        if (!activePrompt.turnId) {
+            if (!activePrompt.turnStartRequested) {
+                this.cancelActivePrompt(activePrompt);
+            }
+            return;
+        }
+        const interrupted = await this.interruptTurnOnce(sessionState, activePrompt.turnId, reason);
+        if (!interrupted) {
+            this.resolveFailedTurnInterruption(sessionState, activePrompt.turnId);
+        }
+        if (!activePrompt.turnStartResponded) {
+            this.cancelActivePrompt(activePrompt);
+        }
+    }
+
+    private resolveFailedTurnInterruption(sessionState: SessionState, turnId: string): void {
+        this.codexAcpClient.resolveInterruptedTurn({
+            threadId: sessionState.sessionId,
+            turnId,
+        });
+        sessionState.interruptedTurnIds.add(turnId);
+    }
+
+    private unassignedTurnStartPrompts(sessionState: SessionState): ActivePrompt[] {
+        return Array.from(sessionState.activePrompts)
+            .filter((activePrompt) => activePrompt.turnStartRequested && !activePrompt.turnId);
+    }
+
+    private unassignedCurrentTurnId(sessionState: SessionState): string | null {
+        const currentTurnId = sessionState.currentTurnId;
+        if (!currentTurnId) {
+            return null;
+        }
+        for (const activePrompt of sessionState.activePrompts) {
+            if (activePrompt.turnId === currentTurnId) {
+                return null;
+            }
+        }
+        return currentTurnId;
+    }
+
+    private async interruptTurnOnce(sessionState: SessionState, turnId: string, reason: string): Promise<boolean> {
+        if (sessionState.interruptedTurnIds.has(turnId)) {
+            return true;
+        }
+        const activeAttempt = sessionState.turnInterruptionAttempts.get(turnId);
+        if (activeAttempt) {
+            return await activeAttempt;
+        }
+
+        const attempt = this.interruptTurn(sessionState.sessionId, turnId, reason);
+        sessionState.turnInterruptionAttempts.set(turnId, attempt);
+        try {
+            const interrupted = await attempt;
+            if (interrupted) {
+                sessionState.interruptedTurnIds.add(turnId);
+            }
+            return interrupted;
+        } finally {
+            if (sessionState.turnInterruptionAttempts.get(turnId) === attempt) {
+                sessionState.turnInterruptionAttempts.delete(turnId);
+            }
+        }
+    }
+
+    private async interruptTurn(sessionId: string, turnId: string, reason: string): Promise<boolean> {
+        logger.log(`${reason} - interrupting current turn`, {
+            sessionId: sessionId,
+            currentTurnId: turnId
+        });
+        try {
+            await this.codexAcpClient.turnInterrupt({
+                threadId: sessionId,
+                turnId: turnId
+            });
+            logger.log(`${reason} - turnInterrupt succeeded`, {
+                sessionId: sessionId,
+                currentTurnId: turnId
+            });
+            return true;
+        } catch (err) {
+            logger.error(`${reason} - turnInterrupt failed`, err);
+            return false;
         }
     }
 
@@ -926,19 +1410,8 @@ export class CodexAcpServer implements acp.Agent {
             sessionId: params.sessionId,
             currentTurnId: sessionState.currentTurnId
         });
-        try {
-            // After turnInterrupt(), Codex will send turn/completed event, which will naturally complete awaitTurnCompleted()
-            await this.codexAcpClient.turnInterrupt({
-                threadId: params.sessionId,
-                turnId: sessionState.currentTurnId
-            });
-            logger.log("Cancel - turnInterrupt succeeded", {
-                sessionId: params.sessionId,
-                currentTurnId: sessionState.currentTurnId
-            });
-        } catch (err) {
-            logger.error(`Cancel - turnInterrupt failed`, err);
-        }
+        // After turnInterrupt(), Codex will send turn/completed event, which will naturally complete awaitTurnCompleted()
+        await this.interruptTurn(params.sessionId, sessionState.currentTurnId, "Cancel");
     }
 }
 

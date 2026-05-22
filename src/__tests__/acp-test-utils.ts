@@ -204,7 +204,7 @@ export function removeDirectoryWithRetry(directory: string): void {
 export interface CodexMockTestFixture extends TestFixture {
     sendServerNotification(notification: ServerNotification | Record<string, unknown>): void,
     sendServerRequest<T>(method: string, params: unknown): Promise<T>,
-    setPermissionResponse(response: RequestPermissionResponse): void,
+    setPermissionResponse(response: RequestPermissionResponse | Promise<RequestPermissionResponse>): void,
 }
 
 /**
@@ -219,7 +219,7 @@ export function createCodexMockTestFixture(): CodexMockTestFixture {
     const requestHandlers = new Map<string, (params: unknown) => Promise<unknown>>();
 
     // State for controlling permission responses
-    const permissionState: { response: RequestPermissionResponse } = {
+    const permissionState: { response: RequestPermissionResponse | Promise<RequestPermissionResponse> } = {
         response: { outcome: { outcome: 'cancelled' } }
     };
 
@@ -270,7 +270,7 @@ export function createCodexMockTestFixture(): CodexMockTestFixture {
             }
             return await handler(params) as T;
         },
-        setPermissionResponse(response: RequestPermissionResponse): void {
+        setPermissionResponse(response: RequestPermissionResponse | Promise<RequestPermissionResponse>): void {
             permissionState.response = response;
         },
     };
@@ -325,6 +325,12 @@ export function createTestSessionState(overrides?: Partial<SessionState>): Sessi
         agentMode: AgentMode.DEFAULT_AGENT_MODE,
         fastModeEnabled: false,
         currentModelSupportsFast: false,
+        closed: false,
+        closeSignal: new Promise(() => {}),
+        resolveCloseSignal: () => {},
+        activePrompts: new Set(),
+        interruptedTurnIds: new Set(),
+        turnInterruptionAttempts: new Map(),
         ...overrides,
     };
 }

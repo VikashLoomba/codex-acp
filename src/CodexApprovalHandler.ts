@@ -33,10 +33,16 @@ export class CodexApprovalHandler implements ApprovalHandler {
     async handleCommandExecution(
         params: CommandExecutionRequestApprovalParams
     ): Promise<CommandExecutionRequestApprovalResponse> {
+        if (this.sessionState.closed) {
+            return { decision: "cancel" };
+        }
         try {
             const sessionId = this.sessionState.sessionId;
             const acpRequest = this.buildCommandPermissionRequest(sessionId, params);
-            const response = await this.connection.requestPermission(acpRequest);
+            const response = await this.requestPermissionUntilClose(acpRequest);
+            if (response === null) {
+                return { decision: "cancel" };
+            }
             return this.convertCommandResponse(response);
         } catch (error) {
             logger.error("Error requesting command execution permission", error);
@@ -47,15 +53,34 @@ export class CodexApprovalHandler implements ApprovalHandler {
     async handleFileChange(
         params: FileChangeRequestApprovalParams
     ): Promise<FileChangeRequestApprovalResponse> {
+        if (this.sessionState.closed) {
+            return { decision: "cancel" };
+        }
         try {
             const sessionId = this.sessionState.sessionId;
             const acpRequest = this.buildFileChangePermissionRequest(sessionId, params);
-            const response = await this.connection.requestPermission(acpRequest);
+            const response = await this.requestPermissionUntilClose(acpRequest);
+            if (response === null) {
+                return { decision: "cancel" };
+            }
             return this.convertFileChangeResponse(response);
         } catch (error) {
             logger.error("Error requesting file change permission", error);
             return { decision: "cancel" };
         }
+    }
+
+    private async requestPermissionUntilClose(
+        request: acp.RequestPermissionRequest
+    ): Promise<acp.RequestPermissionResponse | null> {
+        const response = await Promise.race([
+            Promise.resolve(this.connection.requestPermission(request)),
+            this.sessionState.closeSignal.then(() => null),
+        ]);
+        if (response === null || this.sessionState.closed) {
+            return null;
+        }
+        return response;
     }
 
     private buildCommandPermissionRequest(

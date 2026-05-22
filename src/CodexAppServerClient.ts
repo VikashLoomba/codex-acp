@@ -33,6 +33,8 @@ import type {
     ThreadResumeResponse,
     ThreadStartParams,
     ThreadStartResponse,
+    ThreadUnsubscribeParams,
+    ThreadUnsubscribeResponse,
     TurnCompletedNotification,
     TurnInterruptParams,
     TurnInterruptResponse,
@@ -159,22 +161,48 @@ export class CodexAppServerClient {
         return await this.sendRequest({ method: "turn/start", params: params });
     }
 
-    async runTurn(params: TurnStartParams): Promise<TurnCompletedNotification> {
+    async runTurn(
+        params: TurnStartParams,
+        onTurnStarted?: (turnId: string) => void,
+        cancellation?: Promise<TurnCompletedNotification>
+    ): Promise<TurnCompletedNotification> {
         const capturedCompletions: Array<TurnCompletedNotification> = [];
         const releaseCapture = this.captureTurnCompletions(params.threadId, (event) => {
             capturedCompletions.push(event);
         });
 
         try {
-            const turnStarted = await this.turnStart(params);
+            const turnStartedResult = cancellation
+                ? await Promise.race([
+                    this.turnStart(params).then(response => ({type: "started" as const, response})),
+                    cancellation.then(completion => ({type: "cancelled" as const, completion})),
+                ])
+                : {type: "started" as const, response: await this.turnStart(params)};
+            if (turnStartedResult.type === "cancelled") {
+                return turnStartedResult.completion;
+            }
+
+            const turnStarted = turnStartedResult.response;
             const earlyCompletion = capturedCompletions.find(event => event.turn.id === turnStarted.turn.id);
-            releaseCapture();
             if (earlyCompletion) {
                 return earlyCompletion;
             }
+            const completionPromise = this.awaitTurnCompleted(params.threadId, turnStarted.turn.id);
+            onTurnStarted?.(turnStarted.turn.id);
+            releaseCapture();
             // Wait for turn completion
             // If turnInterrupt() was called, Codex will send turn/completed event with status "interrupted"
-            return await this.awaitTurnCompleted(params.threadId, turnStarted.turn.id);
+            if (!cancellation) {
+                return await completionPromise;
+            }
+            const completionResult = await Promise.race([
+                completionPromise.then(completion => ({type: "completed" as const, completion})),
+                cancellation.then(completion => ({type: "cancelled" as const, completion})),
+            ]);
+            if (completionResult.type === "cancelled") {
+                this.clearPendingTurnCompletion(params.threadId, turnStarted.turn.id);
+            }
+            return completionResult.completion;
         } finally {
             releaseCapture();
         }
@@ -190,6 +218,10 @@ export class CodexAppServerClient {
 
     async threadResume(params: ThreadResumeParams): Promise<ThreadResumeResponse> {
         return await this.sendRequest({ method: "thread/resume", params: params });
+    }
+
+    async threadUnsubscribe(params: ThreadUnsubscribeParams): Promise<ThreadUnsubscribeResponse> {
+        return await this.sendRequest({ method: "thread/unsubscribe", params: params });
     }
 
     async threadList(params: ThreadListParams): Promise<ThreadListResponse> {
@@ -256,6 +288,21 @@ export class CodexAppServerClient {
         });
     }
 
+    resolveTurnInterrupted(threadId: string, turnId: string): void {
+        this.recordTurnCompleted({
+            threadId,
+            turn: {
+                id: turnId,
+                items: [],
+                status: "interrupted",
+                error: null,
+                startedAt: null,
+                completedAt: null,
+                durationMs: null,
+            },
+        });
+    }
+
     async listModels(params: ModelListParams): Promise<ModelListResponse> {
         return await this.sendRequest({ method: "model/list", params });
     }
@@ -270,6 +317,12 @@ export class CodexAppServerClient {
      */
     onServerNotification(sessionId: string, callback: (event: ServerNotification) => void) {
         this.notificationHandlers.set(sessionId, callback);
+    }
+
+    clearSessionHandlers(sessionId: string): void {
+        this.notificationHandlers.delete(sessionId);
+        this.approvalHandlers.delete(sessionId);
+        this.elicitationHandlers.delete(sessionId);
     }
 
     private codexEventHandlers: Array<(event: CodexConnectionEvent) => void> = [];
@@ -310,6 +363,17 @@ export class CodexAppServerClient {
         }
         for (const capture of captures) {
             capture(event);
+        }
+    }
+
+    private clearPendingTurnCompletion(threadId: string, turnId: string): void {
+        const threadResolvers = this.pendingTurnCompletionResolvers.get(threadId);
+        if (!threadResolvers) {
+            return;
+        }
+        threadResolvers.delete(turnId);
+        if (threadResolvers.size === 0) {
+            this.pendingTurnCompletionResolvers.delete(threadId);
         }
     }
 
