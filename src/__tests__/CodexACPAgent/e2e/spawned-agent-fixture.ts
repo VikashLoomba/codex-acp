@@ -28,7 +28,6 @@ export interface SpawnedAgentFixture {
     readonly connection: acp.ClientSideConnection;
     readonly workspaceDir: string;
     createSession(options?: CreateSessionOptions): Promise<acp.NewSessionResponse>;
-    copyAdditionalRootFixture(name: string): string;
     hasMarketplace(marketplaceName: string): Promise<boolean>;
     removeMarketplace(marketplaceName: string): Promise<void>;
     restart(): Promise<SpawnedAgentFixture>;
@@ -184,14 +183,6 @@ class SpawnedAgentFixtureImpl implements SpawnedAgentFixture {
             _meta: sessionOptions._meta ?? null,
             additionalDirectories: sessionOptions.additionalDirectories ?? [],
         });
-    }
-
-    copyAdditionalRootFixture(name: string): string {
-        const source = path.join(process.cwd(), "src", "__tests__", "CodexACPAgent", "e2e", "data", name);
-        const destination = path.join(this.paths.rootDir, "additional-roots", name);
-        fs.mkdirSync(path.dirname(destination), {recursive: true});
-        fs.cpSync(source, destination, {recursive: true});
-        return destination;
     }
 
     async hasMarketplace(marketplaceName: string): Promise<boolean> {

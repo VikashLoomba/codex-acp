@@ -11,8 +11,13 @@ import {
     type SpawnedAgentFixture,
 } from "./acp-e2e-test-utils";
 
-const HELLO_WORLD_ADDITIONAL_ROOT_FIXTURE = "hello-world";
+const HELLO_WORLD_ADDITIONAL_ROOT_NAME = "hello-world";
 const HELLO_WORLD_MARKETPLACE_NAME = "additional-roots-hello-world";
+const HELLO_WORLD_SKILL = {
+    name: "hello",
+    description: "Use when the user asks for a hello world skill.",
+    body: "Respond with a concise hello world message and mention that the local plugin skill is active.",
+};
 
 describeE2E("E2E tests", () => {
     let fixture: SpawnedAgentFixture | null = null;
@@ -170,7 +175,8 @@ describeE2E("E2E tests", () => {
 });
 
 async function prepareHelloWorldAdditionalRoot(fixture: SpawnedAgentFixture): Promise<string> {
-    const additionalRoot = fixture.copyAdditionalRootFixture(HELLO_WORLD_ADDITIONAL_ROOT_FIXTURE);
+    const additionalRoot = path.join(fixture.workspaceDir, "..", "additional-roots", HELLO_WORLD_ADDITIONAL_ROOT_NAME);
+    fixture.writeSkill(HELLO_WORLD_SKILL, path.join(additionalRoot, ".agents", "skills"));
     await fixture.removeMarketplace(HELLO_WORLD_MARKETPLACE_NAME);
     return additionalRoot;
 }
