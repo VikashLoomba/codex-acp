@@ -12,7 +12,7 @@ import {
 import type {ServerNotification} from "../../app-server";
 import type {SessionState} from "../../CodexAcpServer";
 import {AgentMode} from "../../AgentMode";
-import type {Model, TurnStartParams} from "../../app-server/v2";
+import type {Model, Turn, TurnStartParams} from "../../app-server/v2";
 import type {RateLimitsMap} from "../../RateLimitsMap";
 import {ModelId} from "../../ModelId";
 
@@ -215,7 +215,7 @@ describe('ACP server test', { timeout: 40_000 }, () => {
         expect(logoutSpy).toHaveBeenCalledWith({});
     });
 
-    it('prefetches session additional skill roots before thread start', async () => {
+    it('prefetches session skills before thread start', async () => {
         const mockFixture = createCodexMockTestFixture();
         const codexAcpClient = mockFixture.getCodexAcpClient();
         const codexAppServerClient = mockFixture.getCodexAppServerClient();
@@ -245,6 +245,8 @@ describe('ACP server test', { timeout: 40_000 }, () => {
                 inputModalities: ["text"],
                 supportsPersonality: false,
                 additionalSpeedTiers: [],
+                serviceTiers: [],
+                defaultServiceTier: null,
                 isDefault: true
             }],
             nextCursor: null
@@ -253,18 +255,11 @@ describe('ACP server test', { timeout: 40_000 }, () => {
         await codexAcpClient.newSession({
             cwd: "/workspace",
             mcpServers: [],
-            _meta: {
-                additionalRoots: ["/skills/one", " /skills/two ", 7]
-            }
         });
 
         expect(listSkillsSpy).toHaveBeenCalledWith({
             cwds: ["/workspace"],
             forceReload: true,
-            perCwdExtraUserRoots: [{
-                cwd: "/workspace",
-                extraUserRoots: ["/skills/one", "/skills/two"]
-            }]
         });
         expect(listSkillsSpy.mock.invocationCallOrder[0]!).toBeLessThan(threadStartSpy.mock.invocationCallOrder[0]!);
     });
@@ -358,7 +353,7 @@ describe('ACP server test', { timeout: 40_000 }, () => {
         expect(session.sessionId).toBe("thread-id");
     });
 
-    it('prefetches session additional skill roots before turn start', async () => {
+    it('prefetches session skills before turn start', async () => {
         const mockFixture = createCodexMockTestFixture();
         const codexAcpAgent = mockFixture.getCodexAcpAgent();
         const codexAppServerClient = mockFixture.getCodexAppServerClient();
@@ -380,19 +375,12 @@ describe('ACP server test', { timeout: 40_000 }, () => {
         const promptRequest: acp.PromptRequest = {
             sessionId: "session-id",
             prompt: [{ type: "text", text: "Hello" }],
-            _meta: {
-                additionalRoots: ["/skills/one", " /skills/two ", 7]
-            }
         };
         await codexAcpAgent.prompt(promptRequest);
 
         expect(listSkillsSpy).toHaveBeenCalledWith({
             cwds: ["/workspace"],
             forceReload: true,
-            perCwdExtraUserRoots: [{
-                cwd: "/workspace",
-                extraUserRoots: ["/skills/one", "/skills/two"]
-            }]
         });
         expect(listSkillsSpy.mock.invocationCallOrder[0]!).toBeLessThan(turnStartSpy.mock.invocationCallOrder[0]!);
     });
@@ -412,10 +400,11 @@ describe('ACP server test', { timeout: 40_000 }, () => {
         return onServerNotification;
     }
 
-    function createTurn(id: string, status: "inProgress" | "completed") {
+    function createTurn(id: string, status: "inProgress" | "completed"): Turn {
         return {
             id,
             items: [],
+            itemsView: "full",
             status,
             error: null,
             startedAt: null,
@@ -445,11 +434,11 @@ describe('ACP server test', { timeout: 40_000 }, () => {
 
         fixture.getCodexAppServerClient().listSkills = vi.fn().mockResolvedValue({ data: [] });
         fixture.getCodexAppServerClient().turnStart = vi.fn().mockResolvedValue({
-            turn: { id: "turn-id", items: [], status: "inProgress", error: null }
+            turn: { id: "turn-id", items: [], itemsView: "full", status: "inProgress", error: null, startedAt: null, completedAt: null, durationMs: null }
         });
         fixture.getCodexAppServerClient().awaitTurnCompleted = vi.fn().mockResolvedValue({
             threadId: "id",
-            turn: { id: "turn-id", items: [], status: "completed", error: null }
+            turn: { id: "turn-id", items: [], itemsView: "full", status: "completed", error: null, startedAt: null, completedAt: null, durationMs: null }
         });
         const sessionState: SessionState = createTestSessionState({
             sessionId: "id",
@@ -657,6 +646,7 @@ describe('ACP server test', { timeout: 40_000 }, () => {
             turn: {
                 id: "turn-id",
                 items: [],
+                itemsView: "full",
                 status: "completed",
                 error: null,
                 startedAt: null,
@@ -852,6 +842,8 @@ describe('ACP server test', { timeout: 40_000 }, () => {
             defaultReasoningEffort: 'medium',
             supportsPersonality: false,
             additionalSpeedTiers: [],
+            serviceTiers: [],
+            defaultServiceTier: null,
             isDefault: false,
             inputModalities: []
         },
@@ -870,6 +862,8 @@ describe('ACP server test', { timeout: 40_000 }, () => {
             defaultReasoningEffort: 'low',
             supportsPersonality: false,
             additionalSpeedTiers: [],
+            serviceTiers: [],
+            defaultServiceTier: null,
             isDefault: true,
             inputModalities: []
         }
@@ -896,6 +890,7 @@ describe('ACP server test', { timeout: 40_000 }, () => {
             turn: {
                 id: "turn-id",
                 items: [],
+                itemsView: "full",
                 status: "inProgress",
                 error: null,
                 startedAt: null,
@@ -908,6 +903,7 @@ describe('ACP server test', { timeout: 40_000 }, () => {
             turn: {
                 id: "turn-id",
                 items: [],
+                itemsView: "full",
                 status: "completed",
                 error: null,
                 startedAt: null,
