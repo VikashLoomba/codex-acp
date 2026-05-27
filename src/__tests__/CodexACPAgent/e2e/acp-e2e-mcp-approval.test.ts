@@ -161,10 +161,9 @@ describeE2E("E2E MCP approval tests (configured in toml)", () => {
         fixture = await createAuthenticatedFixture(undefined, [createMcpServer(invocationMarkerPath)]);
     });
 
-    //TODO: recheck allow_always == persist?
-    it("skips subsequent approvals in the same session when allow_always is selected", async () => {
+    it("skips subsequent approvals in the same session when allow_for_session is selected", async () => {
         fixture.setPermissionResponder(
-            createMcpPermissionResponder(ApprovalOptionId.AllowPersist),
+            createMcpPermissionResponder(ApprovalOptionId.AllowForSession),
         );
         const sessionId = (await fixture.createSession()).sessionId;
 
@@ -175,7 +174,7 @@ describeE2E("E2E MCP approval tests (configured in toml)", () => {
         expectMcpPermissionRequestCount(fixture, sessionId, 1);
     });
 
-    it.skip("skips subsequent approvals after session restart when allow_always is selected", async () => {
+    it("skips subsequent approvals after session restart when allow_persist is selected", async () => {
         fixture.setPermissionResponder(
             createMcpPermissionResponder(ApprovalOptionId.AllowPersist),
         );
