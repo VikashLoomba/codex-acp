@@ -17,8 +17,7 @@ describeE2E("E2E session persistence tests", () => {
         beforeRestartFixture = null;
     });
 
-    // Temporarily disabled as flaky
-    it.skip("persists a session across ACP process restart", async () => {
+    it("persists a session across ACP process restart", async () => {
         beforeRestartFixture = await createAuthenticatedFixture();
         const sessionId = (await beforeRestartFixture.createSession()).sessionId;
 
