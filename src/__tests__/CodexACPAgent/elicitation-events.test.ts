@@ -254,6 +254,7 @@ describe('Elicitation Events', () => {
                 params: {
                     threadId: sessionId,
                     turnId: 'turn-1',
+                    startedAtMs: 1000,
                     item: {
                         type: "mcpToolCall",
                         id: "completed-call-id",
@@ -261,6 +262,7 @@ describe('Elicitation Events', () => {
                         tool: "tool-name",
                         status: "inProgress",
                         arguments: { argument: "example" },
+                        pluginId: null,
                         result: null,
                         error: null,
                         durationMs: null,
@@ -272,6 +274,7 @@ describe('Elicitation Events', () => {
                 params: {
                     threadId: sessionId,
                     turnId: 'turn-1',
+                    completedAtMs: 2000,
                     item: {
                         type: "mcpToolCall",
                         id: "completed-call-id",
@@ -279,6 +282,7 @@ describe('Elicitation Events', () => {
                         tool: "tool-name",
                         status: "completed",
                         arguments: { argument: "example" },
+                        pluginId: null,
                         result: { content: [], structuredContent: null, _meta: null },
                         error: null,
                         durationMs: 15,
@@ -317,6 +321,7 @@ describe('Elicitation Events', () => {
                 params: {
                     threadId: sessionId,
                     turnId: 'turn-1',
+                    startedAtMs: 1000,
                     item: {
                         type: "mcpToolCall",
                         id: "interrupted-call-id",
@@ -324,6 +329,7 @@ describe('Elicitation Events', () => {
                         tool: "tool-name",
                         status: "inProgress",
                         arguments: { argument: "example" },
+                        pluginId: null,
                         result: null,
                         error: null,
                         durationMs: null,

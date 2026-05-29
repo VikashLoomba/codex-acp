@@ -66,6 +66,7 @@ describe('Approval Events', () => {
                     threadId: sessionId,
                     turnId: 'turn-1',
                     itemId: `item-${optionId}`,
+                    startedAtMs: 1000,
                     reason: 'Test command',
                     proposedExecpolicyAmendment: null,
                 };
@@ -92,6 +93,7 @@ describe('Approval Events', () => {
                 threadId: sessionId,
                 turnId: 'turn-1',
                 itemId: 'item-cancelled',
+                startedAtMs: 1000,
                 reason: null,
                 proposedExecpolicyAmendment: null,
             };
@@ -112,6 +114,7 @@ describe('Approval Events', () => {
                 threadId: 'non-existent-session',
                 turnId: 'turn-1',
                 itemId: 'item-no-handler',
+                startedAtMs: 1000,
                 reason: null,
                 proposedExecpolicyAmendment: null,
             };
@@ -134,6 +137,7 @@ describe('Approval Events', () => {
                 threadId: sessionId,
                 turnId: 'turn-1',
                 itemId: 'item-snapshot',
+                startedAtMs: 1000,
                 reason: 'Running npm install',
                 proposedExecpolicyAmendment: null,
             };
@@ -161,6 +165,7 @@ describe('Approval Events', () => {
                 threadId: sessionId,
                 turnId: 'turn-1',
                 itemId: 'item-with-command',
+                startedAtMs: 1000,
                 reason: 'Installing dependencies',
                 command: 'npm install',
                 cwd: '/home/user/project',
@@ -198,6 +203,7 @@ describe('Approval Events', () => {
                 threadId: sessionId,
                 turnId: 'turn-1',
                 itemId: 'item-shell-prefix',
+                startedAtMs: 1000,
                 reason: 'Installing dependencies',
                 command,
                 cwd: '/home/user/project',
@@ -237,6 +243,7 @@ describe('Approval Events', () => {
                     threadId: sessionId,
                     turnId: 'turn-1',
                     itemId: `file-change-${optionId}`,
+                    startedAtMs: 1000,
                     reason: 'Test file change',
                     grantRoot: null,
                 };
@@ -263,6 +270,7 @@ describe('Approval Events', () => {
                 threadId: sessionId,
                 turnId: 'turn-1',
                 itemId: 'file-change-cancelled',
+                startedAtMs: 1000,
                 reason: null,
                 grantRoot: null,
             };
@@ -283,6 +291,7 @@ describe('Approval Events', () => {
                 threadId: 'non-existent-session',
                 turnId: 'turn-1',
                 itemId: 'file-change-no-handler',
+                startedAtMs: 1000,
                 reason: null,
                 grantRoot: null,
             };
@@ -305,6 +314,7 @@ describe('Approval Events', () => {
                 threadId: sessionId,
                 turnId: 'turn-1',
                 itemId: 'file-change-snapshot',
+                startedAtMs: 1000,
                 reason: 'Modifying config file',
                 grantRoot: null,
             };
