@@ -7,6 +7,7 @@ import {
     createCodexMockTestFixture,
     createTestFixture,
     createTestSessionState,
+    createTestTurn,
     type TestFixture
 } from "../acp-test-utils";
 import type {ServerNotification} from "../../app-server";
@@ -220,6 +221,7 @@ describe('ACP server test', { timeout: 40_000 }, () => {
         const codexAcpClient = mockFixture.getCodexAcpClient();
         const codexAppServerClient = mockFixture.getCodexAppServerClient();
 
+        const extraRootsSpy = vi.spyOn(codexAppServerClient, "setSkillsExtraRoots").mockResolvedValue({});
         const listSkillsSpy = vi.spyOn(codexAppServerClient, "listSkills").mockResolvedValue({ data: [] });
         const threadStartSpy = vi.spyOn(codexAppServerClient, "threadStart").mockResolvedValue({
             thread: { id: "thread-id" } as any,
@@ -245,6 +247,8 @@ describe('ACP server test', { timeout: 40_000 }, () => {
                 inputModalities: ["text"],
                 supportsPersonality: false,
                 additionalSpeedTiers: [],
+                serviceTiers: [],
+                defaultServiceTier: null,
                 isDefault: true
             }],
             nextCursor: null
@@ -258,14 +262,14 @@ describe('ACP server test', { timeout: 40_000 }, () => {
             }
         });
 
+        expect(extraRootsSpy).toHaveBeenCalledWith({
+            extraRoots: ["/skills/one", "/skills/two"]
+        });
         expect(listSkillsSpy).toHaveBeenCalledWith({
             cwds: ["/workspace"],
             forceReload: true,
-            perCwdExtraUserRoots: [{
-                cwd: "/workspace",
-                extraUserRoots: ["/skills/one", "/skills/two"]
-            }]
         });
+        expect(extraRootsSpy.mock.invocationCallOrder[0]!).toBeLessThan(listSkillsSpy.mock.invocationCallOrder[0]!);
         expect(listSkillsSpy.mock.invocationCallOrder[0]!).toBeLessThan(threadStartSpy.mock.invocationCallOrder[0]!);
     });
 
@@ -363,6 +367,7 @@ describe('ACP server test', { timeout: 40_000 }, () => {
         const codexAcpAgent = mockFixture.getCodexAcpAgent();
         const codexAppServerClient = mockFixture.getCodexAppServerClient();
 
+        const extraRootsSpy = vi.spyOn(codexAppServerClient, "setSkillsExtraRoots").mockResolvedValue({});
         const listSkillsSpy = vi.spyOn(codexAppServerClient, "listSkills").mockResolvedValue({ data: [] });
         const turnStartSpy = vi.spyOn(codexAppServerClient, "turnStart").mockResolvedValue({
             turn: { id: "turn-id", items: [], status: "inProgress", error: null }
@@ -386,14 +391,14 @@ describe('ACP server test', { timeout: 40_000 }, () => {
         };
         await codexAcpAgent.prompt(promptRequest);
 
+        expect(extraRootsSpy).toHaveBeenCalledWith({
+            extraRoots: ["/skills/one", "/skills/two"]
+        });
         expect(listSkillsSpy).toHaveBeenCalledWith({
             cwds: ["/workspace"],
             forceReload: true,
-            perCwdExtraUserRoots: [{
-                cwd: "/workspace",
-                extraUserRoots: ["/skills/one", "/skills/two"]
-            }]
         });
+        expect(extraRootsSpy.mock.invocationCallOrder[0]!).toBeLessThan(listSkillsSpy.mock.invocationCallOrder[0]!);
         expect(listSkillsSpy.mock.invocationCallOrder[0]!).toBeLessThan(turnStartSpy.mock.invocationCallOrder[0]!);
     });
 
@@ -416,6 +421,7 @@ describe('ACP server test', { timeout: 40_000 }, () => {
         return {
             id,
             items: [],
+            itemsView: "full" as const,
             status,
             error: null,
             startedAt: null,
@@ -445,11 +451,11 @@ describe('ACP server test', { timeout: 40_000 }, () => {
 
         fixture.getCodexAppServerClient().listSkills = vi.fn().mockResolvedValue({ data: [] });
         fixture.getCodexAppServerClient().turnStart = vi.fn().mockResolvedValue({
-            turn: { id: "turn-id", items: [], status: "inProgress", error: null }
+            turn: createTestTurn("turn-id", "inProgress")
         });
         fixture.getCodexAppServerClient().awaitTurnCompleted = vi.fn().mockResolvedValue({
             threadId: "id",
-            turn: { id: "turn-id", items: [], status: "completed", error: null }
+            turn: createTestTurn("turn-id", "completed")
         });
         const sessionState: SessionState = createTestSessionState({
             sessionId: "id",
@@ -655,13 +661,7 @@ describe('ACP server test', { timeout: 40_000 }, () => {
         vi.spyOn(codexAppServerClient, "awaitTurnCompleted").mockResolvedValue({
             threadId: "session-id",
             turn: {
-                id: "turn-id",
-                items: [],
-                status: "completed",
-                error: null,
-                startedAt: null,
-                completedAt: null,
-                durationMs: null,
+                ...createTestTurn("turn-id", "completed"),
             }
         });
 
@@ -689,7 +689,7 @@ describe('ACP server test', { timeout: 40_000 }, () => {
 
         await expect(
             fixture.getCodexAcpAgent().resumeSession({cwd: "", sessionId: sessionId})
-        ).rejects.toThrow("invalid thread id");
+        ).rejects.toThrow("invalid session id");
     });
 
     it('should return available builtin commands', async () => {
@@ -788,6 +788,7 @@ describe('ACP server test', { timeout: 40_000 }, () => {
             data: [
                 {
                     name: "fs",
+                    serverInfo: null,
                     tools: {listFiles: {name: "listFiles", inputSchema: {type: "object"}}},
                     resources: [{name: "workspace", uri: "file:///workspace"}],
                     resourceTemplates: [],
@@ -795,6 +796,7 @@ describe('ACP server test', { timeout: 40_000 }, () => {
                 },
                 {
                     name: "browser",
+                    serverInfo: null,
                     tools: {},
                     resources: [],
                     resourceTemplates: [],
@@ -852,6 +854,8 @@ describe('ACP server test', { timeout: 40_000 }, () => {
             defaultReasoningEffort: 'medium',
             supportsPersonality: false,
             additionalSpeedTiers: [],
+            serviceTiers: [],
+            defaultServiceTier: null,
             isDefault: false,
             inputModalities: []
         },
@@ -870,6 +874,8 @@ describe('ACP server test', { timeout: 40_000 }, () => {
             defaultReasoningEffort: 'low',
             supportsPersonality: false,
             additionalSpeedTiers: [],
+            serviceTiers: [],
+            defaultServiceTier: null,
             isDefault: true,
             inputModalities: []
         }
@@ -893,27 +899,11 @@ describe('ACP server test', { timeout: 40_000 }, () => {
         const mockFixture = createCodexMockTestFixture();
         const sessionState = createTestSessionState(sessionOverrides);
         const turnStartSpy = vi.spyOn(mockFixture.getCodexAppServerClient(), "turnStart").mockResolvedValue({
-            turn: {
-                id: "turn-id",
-                items: [],
-                status: "inProgress",
-                error: null,
-                startedAt: null,
-                completedAt: null,
-                durationMs: null,
-            }
+            turn: createTestTurn("turn-id", "inProgress")
         });
         vi.spyOn(mockFixture.getCodexAppServerClient(), "awaitTurnCompleted").mockResolvedValue({
             threadId: sessionState.sessionId,
-            turn: {
-                id: "turn-id",
-                items: [],
-                status: "completed",
-                error: null,
-                startedAt: null,
-                completedAt: null,
-                durationMs: null,
-            }
+            turn: createTestTurn("turn-id", "completed")
         });
         vi.spyOn(mockFixture.getCodexAcpAgent(), "getSessionState").mockReturnValue(sessionState);
         return { mockFixture, sessionState, turnStartSpy };

@@ -214,7 +214,7 @@ export class CodexAcpClient {
             sessionId: request.sessionId,
             currentModelId: currentModelId,
             models: codexModels,
-            currentServiceTier: response.serviceTier ?? null,
+            currentServiceTier: toServiceTier(response.serviceTier),
         }
     }
 
@@ -231,7 +231,7 @@ export class CodexAcpClient {
             sessionId: request.sessionId,
             currentModelId: currentModelId,
             models: codexModels,
-            currentServiceTier: response.serviceTier ?? null,
+            currentServiceTier: toServiceTier(response.serviceTier),
             thread: response.thread,
         };
     }
@@ -254,7 +254,7 @@ export class CodexAcpClient {
             sessionId: response.thread.id,
             currentModelId: currentModelId,
             models: codexModels,
-            currentServiceTier: response.serviceTier ?? null,
+            currentServiceTier: toServiceTier(response.serviceTier),
         };
     }
 
@@ -317,13 +317,14 @@ export class CodexAcpClient {
             return;
         }
         const additionalRoots = readAdditionalRoots(meta);
+        if (additionalRoots.length > 0) {
+            await this.codexClient.setSkillsExtraRoots({
+                extraRoots: additionalRoots,
+            });
+        }
         await this.codexClient.listSkills({
             cwds: [cwd],
             forceReload: true,
-            perCwdExtraUserRoots: [{
-                cwd: cwd,
-                extraUserRoots: additionalRoots
-            }]
         });
     }
 
@@ -633,6 +634,16 @@ function readAdditionalRoots(meta: Record<string, unknown> | null | undefined): 
         .filter((value): value is string => typeof value === "string")
         .map(value => value.trim())
         .filter(value => value.length > 0)));
+}
+
+function toServiceTier(serviceTier: string | null): ServiceTier | null {
+    switch (serviceTier) {
+        case "fast":
+        case "flex":
+            return serviceTier;
+        default:
+            return null;
+    }
 }
 
 function mergeGatewayConfig(config: JsonObject, gatewayConfig: GatewayConfig | null): JsonObject {

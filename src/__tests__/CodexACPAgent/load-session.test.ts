@@ -33,6 +33,8 @@ describe("CodexACPAgent - loadSession", () => {
             inputModalities: ["text", "image"],
             supportsPersonality: false,
             additionalSpeedTiers: [],
+            serviceTiers: [],
+            defaultServiceTier: null,
             isDefault: true,
         };
 
@@ -54,6 +56,8 @@ describe("CodexACPAgent - loadSession", () => {
             cwd: "/test/project",
             cliVersion: "0.0.0",
             source: "cli",
+            sessionId: "session-id",
+            threadSource: null,
             agentNickname: null,
             agentRole: null,
             gitInfo: null,
@@ -62,6 +66,7 @@ describe("CodexACPAgent - loadSession", () => {
                 {
                     id: "turn-1",
                     status: "completed",
+                    itemsView: "full",
                     error: null,
                     startedAt: null,
                     completedAt: null,
@@ -70,6 +75,7 @@ describe("CodexACPAgent - loadSession", () => {
                         {
                             type: "userMessage",
                             id: "item-user-1",
+                            clientId: null,
                             content: [
                                 { type: "text", text: "Hi", text_elements: [] },
                                 { type: "image", url: "https://example.com/image.png" },
@@ -123,6 +129,7 @@ describe("CodexACPAgent - loadSession", () => {
                             id: "item-mcp-1",
                             server: "github",
                             tool: "search",
+                            pluginId: null,
                             status: "completed",
                             arguments: {},
                             result: null,
@@ -196,6 +203,8 @@ describe("CodexACPAgent - loadSession", () => {
             inputModalities: ["text"],
             supportsPersonality: false,
             additionalSpeedTiers: [],
+            serviceTiers: [],
+            defaultServiceTier: null,
             isDefault: true,
         };
 
@@ -217,6 +226,8 @@ describe("CodexACPAgent - loadSession", () => {
                 cwd: "/test/project",
                 cliVersion: "0.0.0",
                 source: "cli",
+                sessionId: "session-id",
+                threadSource: null,
                 agentNickname: null,
                 agentRole: null,
                 gitInfo: null,
@@ -268,6 +279,8 @@ describe("CodexACPAgent - loadSession", () => {
             inputModalities: ["text"],
             supportsPersonality: false,
             additionalSpeedTiers: [],
+            serviceTiers: [],
+            defaultServiceTier: null,
             isDefault: true,
         };
 
@@ -289,6 +302,8 @@ describe("CodexACPAgent - loadSession", () => {
                 cwd: "/test/project",
                 cliVersion: "0.0.0",
                 source: "cli",
+                sessionId: "session-id",
+                threadSource: null,
                 agentNickname: null,
                 agentRole: null,
                 gitInfo: null,

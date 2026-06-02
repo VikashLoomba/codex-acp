@@ -10,7 +10,7 @@ import fs from "node:fs";
 import os from "node:os";
 import {AgentMode} from "../AgentMode";
 import {expect, vi} from "vitest";
-import type {Model, ReasoningEffortOption} from "../app-server/v2";
+import type {Model, ReasoningEffortOption, Turn, TurnStatus} from "../app-server/v2";
 
 export type MethodCallEvent = { method: string; args: any[] };
 
@@ -366,7 +366,23 @@ export function createTestModel(overrides?: Partial<Model>): Model {
         inputModalities: ["text", "image"],
         supportsPersonality: false,
         additionalSpeedTiers: [],
+        serviceTiers: [],
+        defaultServiceTier: null,
         isDefault: true,
+        ...overrides,
+    };
+}
+
+export function createTestTurn(id = "turn-id", status: TurnStatus = "completed", overrides?: Partial<Turn>): Turn {
+    return {
+        id,
+        items: [],
+        itemsView: "full",
+        status,
+        error: null,
+        startedAt: null,
+        completedAt: null,
+        durationMs: null,
         ...overrides,
     };
 }
@@ -384,27 +400,11 @@ export function setupPromptTestSession(sessionOverrides?: Partial<SessionState>)
 export function mockPromptTurn(fixture: CodexMockTestFixture, sessionId: string) {
     const codexAppServerClient = fixture.getCodexAppServerClient();
     const turnStartSpy = vi.spyOn(codexAppServerClient, "turnStart").mockResolvedValue({
-        turn: {
-            id: "turn-id",
-            items: [],
-            status: "inProgress",
-            error: null,
-            startedAt: null,
-            completedAt: null,
-            durationMs: null,
-        }
+        turn: createTestTurn("turn-id", "inProgress"),
     });
     vi.spyOn(codexAppServerClient, "awaitTurnCompleted").mockResolvedValue({
         threadId: sessionId,
-        turn: {
-            id: "turn-id",
-            items: [],
-            status: "completed",
-            error: null,
-            startedAt: null,
-            completedAt: null,
-            durationMs: null,
-        }
+        turn: createTestTurn("turn-id", "completed"),
     });
 
     return turnStartSpy;

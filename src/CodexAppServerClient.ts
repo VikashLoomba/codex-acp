@@ -21,6 +21,8 @@ import type {
     McpServerStatusUpdatedNotification,
     ModelListParams,
     ModelListResponse,
+    SkillsExtraRootsSetParams,
+    SkillsExtraRootsSetResponse,
     SkillsListParams,
     SkillsListResponse,
     ThreadLoadedListParams,
@@ -262,6 +264,10 @@ export class CodexAppServerClient {
 
     async listSkills(params: SkillsListParams): Promise<SkillsListResponse> {
         return await this.sendRequest({ method: "skills/list", params });
+    }
+
+    async setSkillsExtraRoots(params: SkillsExtraRootsSetParams): Promise<SkillsExtraRootsSetResponse> {
+        return await this.sendRequest({ method: "skills/extraRoots/set", params });
     }
 
     /**
