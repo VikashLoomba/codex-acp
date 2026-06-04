@@ -357,7 +357,13 @@ describe("CodexACPAgent - session close", () => {
             expect(threadResumeSpy).toHaveBeenCalledTimes(1);
         });
 
-        await expect(agent.closeSession({ sessionId })).resolves.toEqual({});
+        const closePromise = agent.closeSession({ sessionId });
+        let closeResolved = false;
+        void closePromise.then(() => {
+            closeResolved = true;
+        });
+        await flushAsyncWork();
+        expect(closeResolved).toBe(false);
         expect(unsubscribeSpy).not.toHaveBeenCalled();
 
         resolveResume(createThreadResumeResponse(sessionId, createThread(sessionId, [{
@@ -366,6 +372,7 @@ describe("CodexACPAgent - session close", () => {
         }])));
 
         await expect(loadPromise).rejects.toThrow("Invalid request");
+        await expect(closePromise).resolves.toEqual({});
         expect(unsubscribeSpy).toHaveBeenCalledWith({ threadId: sessionId });
         expect(listSkillsSpy).not.toHaveBeenCalled();
         expect(fixture.getAcpConnectionEvents([])).toEqual([]);
@@ -414,14 +421,21 @@ describe("CodexACPAgent - session close", () => {
         });
         expect(threadResumeSpy).not.toHaveBeenCalled();
 
-        await expect(agent.closeSession({ sessionId })).resolves.toEqual({});
+        const closePromise = agent.closeSession({ sessionId });
+        let closeResolved = false;
+        void closePromise.then(() => {
+            closeResolved = true;
+        });
+        await flushAsyncWork();
+        expect(closeResolved).toBe(false);
         expect(unsubscribeSpy).not.toHaveBeenCalled();
 
         resolveAuthorization();
 
         await expect(loadPromise).rejects.toThrow("Invalid request");
-        expect(threadResumeSpy).toHaveBeenCalledTimes(1);
-        expect(unsubscribeSpy).toHaveBeenCalledWith({ threadId: sessionId });
+        await expect(closePromise).resolves.toEqual({});
+        expect(threadResumeSpy).not.toHaveBeenCalled();
+        expect(unsubscribeSpy).not.toHaveBeenCalled();
         expect(listSkillsSpy).not.toHaveBeenCalled();
         expect(fixture.getAcpConnectionEvents([])).toEqual([]);
         expect(() => agent.getSessionState(sessionId)).toThrow(`Session ${sessionId} not found`);
@@ -912,7 +926,7 @@ describe("CodexACPAgent - session close", () => {
         await expect(reopenedPrompt).resolves.toMatchObject({ stopReason: "end_turn" });
     });
 
-    it("bounds a reopened prompt wait on an unidentified stale turn-start fence", async () => {
+    it("keeps a reopened prompt blocked until an unidentified stale turn-start fence is identified", async () => {
         const fixture = createCodexMockTestFixture();
         const sessionId = await createSession(fixture);
         const agent = fixture.getCodexAcpAgent();
@@ -956,27 +970,12 @@ describe("CodexACPAgent - session close", () => {
             mcpServers: [],
         });
 
-        vi.useFakeTimers();
         const reopenedPrompt = agent.prompt({
             sessionId,
             prompt: [{ type: "text", text: "New" }],
         });
-        try {
-            await Promise.resolve();
-            expect(turnStartResolvers.has("New")).toBe(false);
-
-            await vi.advanceTimersByTimeAsync(1000);
-            expect(turnStartResolvers.has("New")).toBe(true);
-        } finally {
-            vi.useRealTimers();
-        }
-        turnStartResolvers.get("Old")!({ turn: createTurn("old-turn-id", "inProgress") });
-        await vi.waitFor(() => {
-            expect(interruptSpy).toHaveBeenCalledWith({
-                threadId: sessionId,
-                turnId: "old-turn-id",
-            });
-        });
+        await flushAsyncWork();
+        expect(turnStartResolvers.has("New")).toBe(false);
 
         fixture.clearAcpConnectionDump();
         fixture.sendServerNotification({
@@ -985,9 +984,17 @@ describe("CodexACPAgent - session close", () => {
                 threadId: sessionId,
                 turnId: "old-turn-id",
                 itemId: "old-item-id",
-                delta: "stale after timeout",
+                delta: "stale while unidentified",
             },
         } satisfies ServerNotification);
+        await vi.waitFor(() => {
+            expect(interruptSpy).toHaveBeenCalledWith({
+                threadId: sessionId,
+                turnId: "old-turn-id",
+            });
+            expect(turnStartResolvers.has("New")).toBe(true);
+        });
+
         const staleApproval: CommandExecutionRequestApprovalParams = {
             threadId: sessionId,
             turnId: "old-turn-id",
@@ -1001,6 +1008,7 @@ describe("CodexACPAgent - session close", () => {
             "item/commandExecution/requestApproval",
             staleApproval,
         )).resolves.toEqual({ decision: "cancel" });
+        turnStartResolvers.get("Old")!({ turn: createTurn("old-turn-id", "inProgress") });
         await flushAsyncWork();
         expect(fixture.getAcpConnectionEvents([])).toEqual([]);
 

@@ -84,8 +84,6 @@ const McpServerElicitationRequest = new RequestType<
     void
 >('mcpServer/elicitation/request');
 
-const PENDING_TURN_START_FENCE_TIMEOUT_MS = 1000;
-
 /**
  * A type-safe client over the Codex App Server's JSON-RPC API.
  * Maps each request to its expected response and exposes clear, typed methods for supported JSON-RPC operations.
@@ -199,7 +197,7 @@ export class CodexAppServerClient {
                 void turnStartPromise.then((response) => {
                     this.identifyCancelledTurnStart(fence, response.turn.id);
                 }).catch(() => {
-                    this.releaseCancelledTurnStartFence(fence, "rejected");
+                    this.releaseCancelledTurnStartFence(fence);
                 });
                 return turnStartedResult.completion;
             }
@@ -266,36 +264,7 @@ export class CodexAppServerClient {
             if (unidentifiedFences.length === 0) {
                 return;
             }
-            const result = await this.waitForFenceIdentification(unidentifiedFences);
-            if (result === "timeout") {
-                for (const fence of unidentifiedFences) {
-                    if (!fence.identified) {
-                        this.releaseCancelledTurnStartFence(fence, "timeout");
-                    }
-                }
-            }
-        }
-    }
-
-    private async waitForFenceIdentification(
-        unidentifiedFences: CancelledTurnStartFence[],
-    ): Promise<"identified" | "timeout"> {
-        let timeout: ReturnType<typeof setTimeout> | undefined;
-        try {
-            return await Promise.race([
-                Promise.all(unidentifiedFences.map(fence => fence.identifiedPromise))
-                    .then(() => "identified" as const),
-                new Promise<"timeout">((resolve) => {
-                    timeout = setTimeout(
-                        () => resolve("timeout"),
-                        PENDING_TURN_START_FENCE_TIMEOUT_MS,
-                    );
-                }),
-            ]);
-        } finally {
-            if (timeout) {
-                clearTimeout(timeout);
-            }
+            await Promise.all(unidentifiedFences.map(fence => fence.identifiedPromise));
         }
     }
 
@@ -447,7 +416,6 @@ export class CodexAppServerClient {
             }),
             resolveIdentified,
             onTurnStarted,
-            releaseReason: null,
         };
         const fences = this.cancelledTurnStartFences.get(threadId) ?? [];
         fences.push(fence);
@@ -460,7 +428,7 @@ export class CodexAppServerClient {
         turnId: string,
         notifyStarted = true,
     ): boolean {
-        if (!this.ensureCancelledTurnStartFenceRegistered(fence)) {
+        if (!this.isCancelledTurnStartFenceRegistered(fence)) {
             return false;
         }
         fence.turnIds.add(turnId);
@@ -527,29 +495,16 @@ export class CodexAppServerClient {
     private releaseCancelledTurnId(fence: CancelledTurnStartFence, turnId: string): void {
         fence.turnIds.delete(turnId);
         if (fence.turnIds.size === 0 && fence.identified) {
-            this.releaseCancelledTurnStartFence(fence, "completed");
+            this.releaseCancelledTurnStartFence(fence);
         }
     }
 
-    private ensureCancelledTurnStartFenceRegistered(fence: CancelledTurnStartFence): boolean {
+    private isCancelledTurnStartFenceRegistered(fence: CancelledTurnStartFence): boolean {
         const fences = this.cancelledTurnStartFences.get(fence.threadId) ?? [];
-        if (fences.includes(fence)) {
-            return true;
-        }
-        if (fence.releaseReason !== "timeout") {
-            return false;
-        }
-        fences.push(fence);
-        this.cancelledTurnStartFences.set(fence.threadId, fences);
-        fence.releaseReason = null;
-        return true;
+        return fences.includes(fence);
     }
 
-    private releaseCancelledTurnStartFence(
-        fence: CancelledTurnStartFence,
-        reason: CancelledTurnStartFenceReleaseReason,
-    ): void {
-        fence.releaseReason = reason;
+    private releaseCancelledTurnStartFence(fence: CancelledTurnStartFence): void {
         const fences = this.cancelledTurnStartFences.get(fence.threadId);
         if (!fences) {
             return;
@@ -719,10 +674,7 @@ type CancelledTurnStartFence = {
     identifiedPromise: Promise<void>;
     resolveIdentified: () => void;
     onTurnStarted: ((turnId: string) => void) | undefined;
-    releaseReason: CancelledTurnStartFenceReleaseReason | null;
 };
-
-type CancelledTurnStartFenceReleaseReason = "completed" | "rejected" | "timeout";
 
 function isMcpServerStatusUpdatedNotification(notification: ServerNotification): notification is {
     method: "mcpServer/startupStatus/updated";

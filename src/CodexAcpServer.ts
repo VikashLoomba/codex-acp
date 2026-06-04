@@ -87,6 +87,8 @@ interface PendingMcpStartupSession {
 interface PendingSessionOpen {
     count: number;
     closeRequested: boolean;
+    completion: Promise<void>;
+    resolveCompletion: () => void;
 }
 
 export class CodexAcpServer implements acp.Agent {
@@ -201,6 +203,7 @@ export class CodexAcpServer implements acp.Agent {
             : undefined;
         try {
             await this.checkAuthorization();
+            this.assertOpeningSessionNotClosing(openingSessionId);
             const requestedMcpServers = request.mcpServers ?? [];
             const mcpServerStartupVersion = requestedMcpServers.length > 0
                 ? this.codexAcpClient.getMcpServerStartupVersion()
@@ -323,13 +326,20 @@ export class CodexAcpServer implements acp.Agent {
 
     async closeSession(params: acp.CloseSessionRequest): Promise<acp.CloseSessionResponse> {
         logger.log("Close session requested", {sessionId: params.sessionId});
-        const pendingOpenClosed = this.markOpeningSessionClosed(params.sessionId);
+        const pendingOpen = this.markOpeningSessionClosed(params.sessionId);
         const sessionState = this.sessions.get(params.sessionId);
         if (!sessionState) {
-            logger.log(
-                pendingOpenClosed ? "Close session recorded for pending open" : "Close session ignored: session not found",
-                {sessionId: params.sessionId}
-            );
+            if (!pendingOpen) {
+                logger.log("Close session ignored: session not found", {sessionId: params.sessionId});
+                return {};
+            }
+            logger.log("Close session waiting for pending open", {sessionId: params.sessionId});
+            await pendingOpen.completion;
+            const openedSessionState = this.sessions.get(params.sessionId);
+            if (openedSessionState) {
+                return await this.closeSession(params);
+            }
+            logger.log("Close session completed for pending open", {sessionId: params.sessionId});
             return {};
         }
 
@@ -370,9 +380,15 @@ export class CodexAcpServer implements acp.Agent {
         if (pendingOpen) {
             pendingOpen.count += 1;
         } else {
+            let resolveCompletion!: () => void;
+            const completion = new Promise<void>((resolve) => {
+                resolveCompletion = resolve;
+            });
             this.pendingSessionOpens.set(sessionId, {
                 count: 1,
                 closeRequested: false,
+                completion,
+                resolveCompletion,
             });
         }
         return sessionState;
@@ -387,16 +403,17 @@ export class CodexAcpServer implements acp.Agent {
         pendingOpen.count -= 1;
         if (pendingOpen.count <= 0) {
             this.pendingSessionOpens.delete(sessionId);
+            pendingOpen.resolveCompletion();
         }
     }
 
-    private markOpeningSessionClosed(sessionId: string): boolean {
+    private markOpeningSessionClosed(sessionId: string): PendingSessionOpen | null {
         const pendingOpen = this.pendingSessionOpens.get(sessionId);
         if (!pendingOpen) {
-            return false;
+            return null;
         }
         pendingOpen.closeRequested = true;
-        return true;
+        return pendingOpen;
     }
 
     private isOpeningSessionClosing(sessionId: string): boolean {
@@ -413,6 +430,12 @@ export class CodexAcpServer implements acp.Agent {
             || sessionState?.closed
             || (openingSessionState !== undefined && sessionState !== openingSessionState)
         );
+    }
+
+    private assertOpeningSessionNotClosing(sessionId: string | null): void {
+        if (sessionId && this.isOpeningSessionClosing(sessionId)) {
+            throw RequestError.invalidRequest(`Session ${sessionId} is closing`);
+        }
     }
 
     private async installSessionStateWhileOpening(
@@ -625,6 +648,7 @@ export class CodexAcpServer implements acp.Agent {
         const openingSessionState = this.beginOpeningSession(request.sessionId);
         try {
             await this.checkAuthorization();
+            this.assertOpeningSessionNotClosing(request.sessionId);
             const requestedMcpServers = request.mcpServers ?? [];
             const mcpServerStartupVersion = requestedMcpServers.length > 0
                 ? this.codexAcpClient.getMcpServerStartupVersion()
