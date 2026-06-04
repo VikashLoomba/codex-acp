@@ -119,6 +119,60 @@ describe("CodexACPAgent - session close", () => {
         expect(fixture.getAcpConnectionEvents([])).toEqual([]);
     });
 
+    it("returns cancelled when a closed prompt completes normally before interrupt finishes", async () => {
+        const fixture = createCodexMockTestFixture();
+        const sessionId = await createSession(fixture);
+        const agent = fixture.getCodexAcpAgent();
+        const codexAppServerClient = fixture.getCodexAppServerClient();
+
+        vi.spyOn(codexAppServerClient, "turnStart").mockResolvedValue({
+            turn: createTurn("turn-id", "inProgress"),
+        });
+        let resolveCompletion!: (value: { threadId: string; turn: Turn }) => void;
+        vi.spyOn(codexAppServerClient, "awaitTurnCompleted").mockReturnValue(
+            new Promise((resolve) => {
+                resolveCompletion = resolve;
+            })
+        );
+        let resolveInterrupt!: (value: Awaited<ReturnType<typeof codexAppServerClient.turnInterrupt>>) => void;
+        const interruptSpy = vi.spyOn(codexAppServerClient, "turnInterrupt").mockReturnValue(
+            new Promise((resolve) => {
+                resolveInterrupt = resolve;
+            })
+        );
+        const unsubscribeSpy = vi.spyOn(codexAppServerClient, "threadUnsubscribe").mockResolvedValue({
+            status: "unsubscribed",
+        });
+
+        const promptPromise = agent.prompt({
+            sessionId,
+            prompt: [{ type: "text", text: "Active work" }],
+        });
+
+        await vi.waitFor(() => {
+            expect(codexAppServerClient.awaitTurnCompleted).toHaveBeenCalledWith(sessionId, "turn-id");
+        });
+
+        const closePromise = agent.closeSession({ sessionId });
+        await vi.waitFor(() => {
+            expect(interruptSpy).toHaveBeenCalledWith({
+                threadId: sessionId,
+                turnId: "turn-id",
+            });
+        });
+
+        resolveCompletion({
+            threadId: sessionId,
+            turn: createTurn("turn-id", "completed"),
+        });
+        await expect(promptPromise).resolves.toMatchObject({ stopReason: "cancelled" });
+        expect(unsubscribeSpy).not.toHaveBeenCalled();
+
+        resolveInterrupt({});
+        await expect(closePromise).resolves.toEqual({});
+        expect(unsubscribeSpy).toHaveBeenCalledWith({ threadId: sessionId });
+    });
+
     it("suppresses async event updates that finish after close begins", async () => {
         const fixture = createCodexMockTestFixture();
         const sessionId = await createSession(fixture);
@@ -319,6 +373,52 @@ describe("CodexACPAgent - session close", () => {
         await expect(inFlightResume).rejects.toThrow("Invalid request");
         expect(codexAppServerClient.threadUnsubscribe).toHaveBeenCalledTimes(2);
         expect(() => agent.getSessionState(sessionId)).toThrow(`Session ${sessionId} not found`);
+    });
+
+    it("allows overlapping resumes when no close is requested", async () => {
+        const fixture = createCodexMockTestFixture();
+        const sessionId = await createSession(fixture);
+        const agent = fixture.getCodexAcpAgent();
+        const codexAppServerClient = fixture.getCodexAppServerClient();
+
+        const resumeResolvers: Array<(value: ThreadResumeResponse) => void> = [];
+        const threadResumeSpy = vi.spyOn(codexAppServerClient, "threadResume").mockImplementation(
+            () => new Promise<ThreadResumeResponse>((resolve) => {
+                resumeResolvers.push(resolve);
+            })
+        );
+        const unsubscribeSpy = vi.spyOn(codexAppServerClient, "threadUnsubscribe").mockResolvedValue({
+            status: "unsubscribed",
+        });
+
+        const firstResume = agent.resumeSession({
+            sessionId,
+            cwd: "/workspace",
+            mcpServers: [],
+        });
+        const secondResume = agent.resumeSession({
+            sessionId,
+            cwd: "/workspace",
+            mcpServers: [],
+        });
+
+        await vi.waitFor(() => {
+            expect(threadResumeSpy).toHaveBeenCalledTimes(2);
+        });
+
+        resumeResolvers[0]!(createThreadResumeResponse(sessionId));
+        await expect(firstResume).resolves.toEqual(expect.objectContaining({
+            models: expect.any(Object),
+        }));
+        expect(unsubscribeSpy).not.toHaveBeenCalled();
+        expect(() => agent.getSessionState(sessionId)).not.toThrow();
+
+        resumeResolvers[1]!(createThreadResumeResponse(sessionId));
+        await expect(secondResume).resolves.toEqual(expect.objectContaining({
+            models: expect.any(Object),
+        }));
+        expect(unsubscribeSpy).not.toHaveBeenCalled();
+        expect(() => agent.getSessionState(sessionId)).not.toThrow();
     });
 
     it("rejects a load that is closed before session state exists", async () => {
@@ -1017,6 +1117,81 @@ describe("CodexACPAgent - session close", () => {
         expect(unsubscribeSpy).toHaveBeenCalledTimes(1);
     });
 
+    it("releases an abandoned unidentified turn-start fence so future prompts do not hang", async () => {
+        const fixture = createCodexMockTestFixture();
+        const sessionId = await createSession(fixture);
+        const agent = fixture.getCodexAcpAgent();
+        const codexAppServerClient = fixture.getCodexAppServerClient();
+        const turnStartResolvers = new Map<string, (value: { turn: Turn }) => void>();
+
+        vi.spyOn(codexAppServerClient, "turnStart").mockImplementation((params: TurnStartParams) => {
+            const firstInput = params.input[0];
+            const text = firstInput?.type === "text" ? firstInput.text : "";
+            return new Promise((resolve) => {
+                turnStartResolvers.set(text, resolve);
+            });
+        });
+        vi.spyOn(codexAppServerClient, "awaitTurnCompleted").mockResolvedValue({
+            threadId: sessionId,
+            turn: createTurn("new-turn-id", "completed"),
+        });
+        const unsubscribeSpy = vi.spyOn(codexAppServerClient, "threadUnsubscribe").mockResolvedValue({
+            status: "unsubscribed",
+        });
+        const interruptSpy = vi.spyOn(codexAppServerClient, "turnInterrupt").mockResolvedValue({});
+        vi.spyOn(codexAppServerClient, "threadResume").mockResolvedValue(
+            createThreadResumeResponse(sessionId)
+        );
+
+        const oldPrompt = agent.prompt({
+            sessionId,
+            prompt: [{ type: "text", text: "Old" }],
+        });
+
+        await vi.waitFor(() => {
+            expect(turnStartResolvers.has("Old")).toBe(true);
+        });
+
+        vi.useFakeTimers();
+        try {
+            await expect(agent.closeSession({ sessionId })).resolves.toEqual({});
+            await expect(oldPrompt).resolves.toMatchObject({ stopReason: "cancelled" });
+
+            await agent.resumeSession({
+                sessionId,
+                cwd: "/workspace",
+                mcpServers: [],
+            });
+
+            const reopenedPrompt = agent.prompt({
+                sessionId,
+                prompt: [{ type: "text", text: "New" }],
+            });
+            await Promise.resolve();
+            expect(turnStartResolvers.has("New")).toBe(false);
+
+            await vi.advanceTimersByTimeAsync(1000);
+            await vi.waitFor(() => {
+                expect(turnStartResolvers.has("New")).toBe(true);
+            });
+            vi.useRealTimers();
+
+            turnStartResolvers.get("Old")!({ turn: createTurn("old-turn-id", "inProgress") });
+            await vi.waitFor(() => {
+                expect(interruptSpy).toHaveBeenCalledWith({
+                    threadId: sessionId,
+                    turnId: "old-turn-id",
+                });
+            });
+
+            turnStartResolvers.get("New")!({ turn: createTurn("new-turn-id", "inProgress") });
+            await expect(reopenedPrompt).resolves.toMatchObject({ stopReason: "end_turn" });
+        } finally {
+            vi.useRealTimers();
+        }
+        expect(unsubscribeSpy).toHaveBeenCalledTimes(1);
+    });
+
     it("fences notifications for a known turn when close interrupt fails", async () => {
         const fixture = createCodexMockTestFixture();
         const sessionId = await createSession(fixture);
@@ -1121,6 +1296,20 @@ describe("CodexACPAgent - session close", () => {
             staleElicitation,
         )).resolves.toEqual({ action: "cancel", content: null, _meta: null });
 
+        const staleNullTurnElicitation: McpServerElicitationRequestParams = {
+            threadId: sessionId,
+            turnId: null,
+            serverName: "old-mcp-server",
+            mode: "form",
+            _meta: null,
+            message: "stale null-turn elicitation",
+            requestedSchema: { type: "object", properties: {} },
+        };
+        await expect(fixture.sendServerRequest<McpServerElicitationRequestResponse>(
+            "mcpServer/elicitation/request",
+            staleNullTurnElicitation,
+        )).resolves.toEqual({ action: "cancel", content: null, _meta: null });
+
         fixture.sendServerNotification(createTurnCompletedNotification(sessionId, "old-turn-id"));
         await flushAsyncWork();
         expect(fixture.getAcpConnectionEvents([])).toEqual([]);
@@ -1172,6 +1361,88 @@ describe("CodexACPAgent - session close", () => {
                 turnId: "delayed-response-turn-id",
             });
         });
+    });
+
+    it("does not retain a stale fence when completion arrives before a delayed turn start response", async () => {
+        const fixture = createCodexMockTestFixture();
+        const sessionId = await createSession(fixture);
+        const agent = fixture.getCodexAcpAgent();
+        const codexAppServerClient = fixture.getCodexAppServerClient();
+        const turnStartResolvers = new Map<string, (value: { turn: Turn }) => void>();
+
+        vi.spyOn(codexAppServerClient, "turnStart").mockImplementation((params: TurnStartParams) => {
+            const firstInput = params.input[0];
+            const text = firstInput?.type === "text" ? firstInput.text : "";
+            return new Promise((resolve) => {
+                turnStartResolvers.set(text, resolve);
+            });
+        });
+        vi.spyOn(codexAppServerClient, "awaitTurnCompleted").mockResolvedValue({
+            threadId: sessionId,
+            turn: createTurn("new-turn-id", "completed"),
+        });
+        const interruptSpy = vi.spyOn(codexAppServerClient, "turnInterrupt").mockResolvedValue({});
+        vi.spyOn(codexAppServerClient, "threadUnsubscribe").mockResolvedValue({
+            status: "unsubscribed",
+        });
+        vi.spyOn(codexAppServerClient, "threadResume").mockResolvedValue(
+            createThreadResumeResponse(sessionId)
+        );
+
+        const oldPrompt = agent.prompt({
+            sessionId,
+            prompt: [{ type: "text", text: "Old" }],
+        });
+
+        await vi.waitFor(() => {
+            expect(turnStartResolvers.has("Old")).toBe(true);
+        });
+
+        await expect(agent.closeSession({ sessionId })).resolves.toEqual({});
+        await expect(oldPrompt).resolves.toMatchObject({ stopReason: "cancelled" });
+
+        await agent.resumeSession({
+            sessionId,
+            cwd: "/workspace",
+            mcpServers: [],
+        });
+
+        const reopenedPrompt = agent.prompt({
+            sessionId,
+            prompt: [{ type: "text", text: "New" }],
+        });
+        await flushAsyncWork();
+        expect(turnStartResolvers.has("New")).toBe(false);
+
+        fixture.sendServerNotification(createTurnCompletedNotification(sessionId, "old-turn-id"));
+        await vi.waitFor(() => {
+            expect(turnStartResolvers.has("New")).toBe(true);
+        });
+        expect(interruptSpy).toHaveBeenCalledWith({
+            threadId: sessionId,
+            turnId: "old-turn-id",
+        });
+
+        turnStartResolvers.get("Old")!({ turn: createTurn("old-turn-id", "inProgress") });
+        await flushAsyncWork();
+
+        fixture.setPermissionResponse({ outcome: { outcome: "selected", optionId: "accept" } });
+        const liveNullTurnElicitation: McpServerElicitationRequestParams = {
+            threadId: sessionId,
+            turnId: null,
+            serverName: "new-mcp-server",
+            mode: "form",
+            _meta: null,
+            message: "live null-turn elicitation",
+            requestedSchema: { type: "object", properties: {} },
+        };
+        await expect(fixture.sendServerRequest<McpServerElicitationRequestResponse>(
+            "mcpServer/elicitation/request",
+            liveNullTurnElicitation,
+        )).resolves.toEqual({ action: "accept", content: null, _meta: null });
+
+        turnStartResolvers.get("New")!({ turn: createTurn("new-turn-id", "inProgress") });
+        await expect(reopenedPrompt).resolves.toMatchObject({ stopReason: "end_turn" });
     });
 
     it("interrupts a turn-start notification that arrives after close begins", async () => {

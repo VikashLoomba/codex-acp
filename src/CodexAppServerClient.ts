@@ -84,6 +84,8 @@ const McpServerElicitationRequest = new RequestType<
     void
 >('mcpServer/elicitation/request');
 
+const ABANDONED_TURN_START_FENCE_TIMEOUT_MS = 1000;
+
 /**
  * A type-safe client over the Codex App Server's JSON-RPC API.
  * Maps each request to its expected response and exposes clear, typed methods for supported JSON-RPC operations.
@@ -147,7 +149,7 @@ export class CodexAppServerClient {
         });
 
         this.connection.onRequest(McpServerElicitationRequest, async (params) => {
-            if (this.isFencedTurnRequest(params)) {
+            if (this.isFencedTurnRequest(params) || this.isFencedNullTurnElicitation(params)) {
                 return { action: "cancel", content: null, _meta: null };
             }
             const handler = this.elicitationHandlers.get(params.threadId);
@@ -195,9 +197,14 @@ export class CodexAppServerClient {
             if (turnStartedResult.type === "cancelled") {
                 const fence = this.fenceCancelledTurnStart(params.threadId, onTurnStarted);
                 void turnStartPromise.then((response) => {
-                    this.identifyCancelledTurnStart(fence, response.turn.id);
+                    if (
+                        !this.identifyCancelledTurnStart(fence, response.turn.id)
+                        && fence.releaseReason === "abandoned"
+                    ) {
+                        this.fenceKnownCancelledTurn(params.threadId, response.turn.id);
+                    }
                 }).catch(() => {
-                    this.releaseCancelledTurnStartFence(fence);
+                    this.releaseCancelledTurnStartFence(fence, "abandoned");
                 });
                 return turnStartedResult.completion;
             }
@@ -250,6 +257,16 @@ export class CodexAppServerClient {
         const unidentifiedFence = fences.find(fence => !fence.identified);
         if (unidentifiedFence) {
             this.identifyCancelledTurnStart(unidentifiedFence, turnId, false);
+            return;
+        }
+
+        const fence = this.fenceCancelledTurnStart(threadId);
+        this.identifyCancelledTurnStart(fence, turnId, false);
+    }
+
+    private fenceKnownCancelledTurn(threadId: string, turnId: string): void {
+        const fences = this.cancelledTurnStartFences.get(threadId) ?? [];
+        if (fences.some(fence => fence.turnIds.has(turnId))) {
             return;
         }
 
@@ -416,7 +433,14 @@ export class CodexAppServerClient {
             }),
             resolveIdentified,
             onTurnStarted,
+            abandonedTimer: null,
+            releaseReason: null,
         };
+        fence.abandonedTimer = setTimeout(() => {
+            if (!fence.identified) {
+                this.releaseCancelledTurnStartFence(fence, "abandoned");
+            }
+        }, ABANDONED_TURN_START_FENCE_TIMEOUT_MS);
         const fences = this.cancelledTurnStartFences.get(threadId) ?? [];
         fences.push(fence);
         this.cancelledTurnStartFences.set(threadId, fences);
@@ -429,18 +453,29 @@ export class CodexAppServerClient {
         notifyStarted = true,
     ): boolean {
         if (!this.isCancelledTurnStartFenceRegistered(fence)) {
+            if (notifyStarted) {
+                this.notifyCancelledTurnStarted(fence, turnId);
+            }
             return false;
         }
         fence.turnIds.add(turnId);
-        if (notifyStarted && !fence.startedCallbacks.has(turnId)) {
-            fence.startedCallbacks.add(turnId);
-            fence.onTurnStarted?.(turnId);
+        if (notifyStarted) {
+            this.notifyCancelledTurnStarted(fence, turnId);
         }
         if (!fence.identified) {
             fence.identified = true;
+            this.clearCancelledTurnStartFenceTimer(fence);
             fence.resolveIdentified();
         }
         return true;
+    }
+
+    private notifyCancelledTurnStarted(fence: CancelledTurnStartFence, turnId: string): void {
+        if (fence.startedCallbacks.has(turnId)) {
+            return;
+        }
+        fence.startedCallbacks.add(turnId);
+        fence.onTurnStarted?.(turnId);
     }
 
     private handleFencedTurnNotification(notification: ServerNotification): boolean {
@@ -470,6 +505,14 @@ export class CodexAppServerClient {
         return this.matchCancelledTurnFences(params.threadId, params.turnId).length > 0;
     }
 
+    private isFencedNullTurnElicitation(params: McpServerElicitationRequestParams): boolean {
+        return params.turnId === null && this.hasCancelledTurnFences(params.threadId);
+    }
+
+    private hasCancelledTurnFences(threadId: string): boolean {
+        return (this.cancelledTurnStartFences.get(threadId)?.length ?? 0) > 0;
+    }
+
     private matchCancelledTurnFences(threadId: string, turnId: string): CancelledTurnStartFence[] {
         const fences = this.cancelledTurnStartFences.get(threadId);
         if (!fences || fences.length === 0) {
@@ -495,7 +538,7 @@ export class CodexAppServerClient {
     private releaseCancelledTurnId(fence: CancelledTurnStartFence, turnId: string): void {
         fence.turnIds.delete(turnId);
         if (fence.turnIds.size === 0 && fence.identified) {
-            this.releaseCancelledTurnStartFence(fence);
+            this.releaseCancelledTurnStartFence(fence, "completed");
         }
     }
 
@@ -504,7 +547,12 @@ export class CodexAppServerClient {
         return fences.includes(fence);
     }
 
-    private releaseCancelledTurnStartFence(fence: CancelledTurnStartFence): void {
+    private releaseCancelledTurnStartFence(
+        fence: CancelledTurnStartFence,
+        releaseReason: CancelledTurnStartFenceReleaseReason,
+    ): void {
+        this.clearCancelledTurnStartFenceTimer(fence);
+        fence.releaseReason = releaseReason;
         const fences = this.cancelledTurnStartFences.get(fence.threadId);
         if (!fences) {
             return;
@@ -519,6 +567,14 @@ export class CodexAppServerClient {
             fence.identified = true;
             fence.resolveIdentified();
         }
+    }
+
+    private clearCancelledTurnStartFenceTimer(fence: CancelledTurnStartFence): void {
+        if (fence.abandonedTimer === null) {
+            return;
+        }
+        clearTimeout(fence.abandonedTimer);
+        fence.abandonedTimer = null;
     }
 
     private recordTurnCompleted(event: TurnCompletedNotification): void {
@@ -674,7 +730,11 @@ type CancelledTurnStartFence = {
     identifiedPromise: Promise<void>;
     resolveIdentified: () => void;
     onTurnStarted: ((turnId: string) => void) | undefined;
+    abandonedTimer: ReturnType<typeof setTimeout> | null;
+    releaseReason: CancelledTurnStartFenceReleaseReason | null;
 };
+
+type CancelledTurnStartFenceReleaseReason = "abandoned" | "completed";
 
 function isMcpServerStatusUpdatedNotification(notification: ServerNotification): notification is {
     method: "mcpServer/startupStatus/updated";

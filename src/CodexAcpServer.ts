@@ -198,9 +198,9 @@ export class CodexAcpServer implements acp.Agent {
 
     async getOrCreateSession(request: acp.NewSessionRequest | acp.ResumeSessionRequest): Promise<[SessionId, SessionModelState, SessionModeState]> {
         const openingSessionId = "sessionId" in request ? request.sessionId : null;
-        const openingSessionState = openingSessionId
-            ? this.beginOpeningSession(openingSessionId)
-            : undefined;
+        if (openingSessionId) {
+            this.beginOpeningSession(openingSessionId);
+        }
         try {
             await this.checkAuthorization();
             this.assertOpeningSessionNotClosing(openingSessionId);
@@ -246,7 +246,7 @@ export class CodexAcpServer implements acp.Agent {
                 turnInterruptionAttempts: new Map(),
                 sessionMcpServers: sessionMcpServers,
             }
-            await this.installSessionStateWhileOpening(sessionState, openingSessionState, "sessionId" in request);
+            await this.installSessionStateWhileOpening(sessionState, "sessionId" in request);
 
             if (requestedMcpServers.length > 0 && mcpServerStartupVersion !== null) {
                 this.pendingMcpStartupSessions.set(sessionId, {
@@ -368,7 +368,7 @@ export class CodexAcpServer implements acp.Agent {
         return this.sessions.get(sessionState.sessionId) === sessionState && !sessionState.closed;
     }
 
-    private beginOpeningSession(sessionId: string): SessionState | undefined {
+    private beginOpeningSession(sessionId: string): void {
         const sessionState = this.sessions.get(sessionId);
         if (sessionState?.closed) {
             throw RequestError.invalidRequest(`Session ${sessionId} is closing`);
@@ -391,7 +391,6 @@ export class CodexAcpServer implements acp.Agent {
                 resolveCompletion,
             });
         }
-        return sessionState;
     }
 
     private finishOpeningSession(sessionId: string): void {
@@ -420,15 +419,11 @@ export class CodexAcpServer implements acp.Agent {
         return this.pendingSessionOpens.get(sessionId)?.closeRequested ?? false;
     }
 
-    private shouldRejectOpeningSession(
-        sessionId: string,
-        openingSessionState: SessionState | undefined,
-    ): boolean {
+    private shouldRejectOpeningSession(sessionId: string): boolean {
         const sessionState = this.sessions.get(sessionId);
         return (
             this.isOpeningSessionClosing(sessionId)
-            || sessionState?.closed
-            || (openingSessionState !== undefined && sessionState !== openingSessionState)
+            || sessionState?.closed === true
         );
     }
 
@@ -440,11 +435,10 @@ export class CodexAcpServer implements acp.Agent {
 
     private async installSessionStateWhileOpening(
         sessionState: SessionState,
-        openingSessionState: SessionState | undefined,
         unsubscribeRejectedSession: boolean
     ): Promise<void> {
         const sessionId = sessionState.sessionId;
-        if (this.shouldRejectOpeningSession(sessionId, openingSessionState)) {
+        if (this.shouldRejectOpeningSession(sessionId)) {
             if (unsubscribeRejectedSession) {
                 await this.unsubscribeRejectedSession(sessionId);
             }
@@ -645,7 +639,7 @@ export class CodexAcpServer implements acp.Agent {
         thread: Thread;
         sessionState: SessionState;
     }> {
-        const openingSessionState = this.beginOpeningSession(request.sessionId);
+        this.beginOpeningSession(request.sessionId);
         try {
             await this.checkAuthorization();
             this.assertOpeningSessionNotClosing(request.sessionId);
@@ -687,7 +681,7 @@ export class CodexAcpServer implements acp.Agent {
                 turnInterruptionAttempts: new Map(),
                 sessionMcpServers: sessionMcpServers,
             };
-            await this.installSessionStateWhileOpening(sessionState, openingSessionState, true);
+            await this.installSessionStateWhileOpening(sessionState, true);
 
             if (requestedMcpServers.length > 0 && mcpServerStartupVersion !== null) {
                 this.pendingMcpStartupSessions.set(sessionId, {
@@ -1115,6 +1109,10 @@ export class CodexAcpServer implements acp.Agent {
                 () => activePrompt.cancelled,
                 promptCancellation,
             ));
+
+            if (sessionState.closed || activePrompt.cancelled) {
+                return this.createCancelledPromptResponse(sessionState);
+            }
 
             // Check if turn was interrupted (cancelled)
             if (turnCompleted.turn.status === "interrupted") {
