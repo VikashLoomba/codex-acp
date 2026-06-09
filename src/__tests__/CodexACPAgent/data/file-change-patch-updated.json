@@ -1,0 +1,61 @@
+{
+  "method": "sessionUpdate",
+  "args": [
+    {
+      "sessionId": "test-session-id",
+      "update": {
+        "sessionUpdate": "tool_call",
+        "toolCallId": "file-change-patch-live",
+        "title": "Editing files",
+        "kind": "edit",
+        "status": "in_progress",
+        "content": [
+          {
+            "type": "diff",
+            "oldText": null,
+            "newText": "class FileA\n",
+            "path": "/test/project/FileA.kt",
+            "_meta": {
+              "kind": "add"
+            }
+          }
+        ]
+      }
+    }
+  ]
+}
+{
+  "method": "sessionUpdate",
+  "args": [
+    {
+      "sessionId": "test-session-id",
+      "update": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "file-change-patch-live",
+        "title": "Editing files",
+        "kind": "edit",
+        "status": "in_progress",
+        "content": [
+          {
+            "type": "diff",
+            "oldText": null,
+            "newText": "class FileA {\n    fun hello() = \"hi\"\n}\n",
+            "path": "/test/project/FileA.kt",
+            "_meta": {
+              "kind": "add"
+            }
+          },
+          {
+            "type": "diff",
+            "oldText": null,
+            "newText": "class FileB\n",
+            "path": "/test/project/FileB.kt",
+            "_meta": {
+              "kind": "add"
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

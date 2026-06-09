@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { SessionState } from '../../CodexAcpServer';
 import type { ServerNotification } from '../../app-server';
-import { createFileChangeUpdate } from '../../CodexToolCallMapper';
+import { createFileChangePatchUpdate, createFileChangeUpdate } from '../../CodexToolCallMapper';
 import type { ThreadItem } from '../../app-server/v2';
 import { createCodexMockTestFixture, createTestSessionState, setupPromptAndSendNotifications, type CodexMockTestFixture } from '../acp-test-utils';
 import {AgentMode} from "../../AgentMode";
@@ -113,6 +113,65 @@ describe('CodexEventHandler - file change events', () => {
         await expect(mockFixture.getAcpConnectionDump(['id'])).toMatchFileSnapshot(
             'data/file-change-add-multiple-files.json'
         );
+    });
+
+    it('should handle file change patch updates', async () => {
+        const fileChangeStarted: ServerNotification = {
+            method: 'item/started',
+            params: {
+                threadId: sessionId,
+                turnId: 'turn-1',
+                startedAtMs: 0,
+                item: {
+                    type: 'fileChange',
+                    id: 'file-change-patch-live',
+                    changes: [
+                        {
+                            path: '/test/project/FileA.kt',
+                            kind: { type: 'add' },
+                            diff: 'class FileA\n',
+                        },
+                    ],
+                    status: 'inProgress',
+                },
+            },
+        };
+        const fileChangePatchUpdated: ServerNotification = {
+            method: 'item/fileChange/patchUpdated',
+            params: {
+                threadId: sessionId,
+                turnId: 'turn-1',
+                itemId: 'file-change-patch-live',
+                changes: [
+                    {
+                        path: '/test/project/FileA.kt',
+                        kind: { type: 'add' },
+                        diff: 'class FileA {\n    fun hello() = "hi"\n}\n',
+                    },
+                    {
+                        path: '/test/project/FileB.kt',
+                        kind: { type: 'add' },
+                        diff: 'class FileB\n',
+                    },
+                ],
+            },
+        };
+
+        await setupPromptAndSendNotifications(mockFixture, sessionId, sessionState, [
+            fileChangeStarted,
+            fileChangePatchUpdated,
+        ]);
+
+        await expect(mockFixture.getAcpConnectionDump(['id'])).toMatchFileSnapshot(
+            'data/file-change-patch-updated.json'
+        );
+    });
+
+    it('should ignore empty file change patch updates', async () => {
+        await expect(createFileChangePatchUpdate({
+            itemId: 'file-change-empty-patch',
+            changes: [],
+        })).resolves.toBeNull();
     });
 
     it('should handle new file creation with raw content', async () => {

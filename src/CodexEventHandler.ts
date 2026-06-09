@@ -27,6 +27,7 @@ import {toTokenCount} from "./TokenCount";
 import {
     createCommandExecutionUpdate,
     createDynamicToolCallUpdate,
+    createFileChangePatchUpdate,
     createFileChangeUpdate,
     createMcpRawInput,
     createMcpRawOutput,
@@ -138,6 +139,8 @@ export class CodexEventHandler {
                 return this.handleFuzzyFileSearchSessionUpdated(notification.params);
             case "fuzzyFileSearch/sessionCompleted":
                 return this.handleFuzzyFileSearchSessionCompleted(notification.params);
+            case "item/fileChange/patchUpdated":
+                return await createFileChangePatchUpdate(notification.params);
             // ignored events
             case "command/exec/outputDelta":
             case "item/autoApprovalReview/started":
@@ -150,7 +153,6 @@ export class CodexEventHandler {
             case "turn/diff/updated":
             case "item/commandExecution/terminalInteraction":
             case "item/fileChange/outputDelta":
-            case "item/fileChange/patchUpdated":
             case "account/updated":
             case "fs/changed":
             case "mcpServer/startupStatus/updated":
