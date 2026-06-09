@@ -156,6 +156,7 @@ export class CodexEventHandler {
             case "mcpServer/startupStatus/updated":
             case "serverRequest/resolved":
             case "model/verification":
+            case "turn/moderationMetadata":
             case "windows/worldWritableWarning":
             case "thread/realtime/started":
             case "thread/realtime/itemAdded":
