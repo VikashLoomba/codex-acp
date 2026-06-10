@@ -181,6 +181,7 @@ export class CodexEventHandler {
             case "thread/settings/updated":
             case "process/outputDelta":
             case "process/exited":
+            case "turn/moderationMetadata":
                 return null;
         }
     }
