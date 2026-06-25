@@ -580,11 +580,6 @@ export class CodexAcpClient {
             "vscode",
             "exec",
             "appServer",
-            "subAgent",
-            "subAgentReview",
-            "subAgentCompact",
-            "subAgentThreadSpawn",
-            "subAgentOther",
             "unknown",
         ];
         const requestedCwd = request.cwd?.trim() ?? null;
@@ -605,26 +600,23 @@ export class CodexAcpClient {
             sourceKinds: sourceKinds,
         });
 
+        const mapThreadToSession = (thread: Thread) => ({
+            sessionId: thread.id,
+            cwd: thread.cwd,
+            title: (thread.name ?? thread.preview) || null,
+            updatedAt: new Date(thread.updatedAt * 1000).toISOString(),
+        });
+
         if (listResponse.data.length === 0) {
             const diagnostics = await this.runSessionListDiagnostics();
             logger.log("Session list diagnostics", diagnostics);
         }
 
-        let sessions = listResponse.data.map((thread) => ({
-            sessionId: thread.id,
-            cwd: thread.cwd,
-            title: (thread.name ?? thread.preview) || null,
-            updatedAt: new Date(thread.updatedAt * 1000).toISOString(),
-        }));
+        let sessions = listResponse.data.map(mapThreadToSession);
         if (requestedCwd) {
             const filtered = listResponse.data
                 .filter(filterByCwd)
-                .map((thread) => ({
-                    sessionId: thread.id,
-                    cwd: thread.cwd,
-                    title: (thread.name ?? thread.preview) || null,
-                    updatedAt: new Date(thread.updatedAt * 1000).toISOString(),
-                }));
+                .map(mapThreadToSession);
             if (filtered.length > 0 || path.isAbsolute(requestedCwd)) {
                 sessions = filtered;
             } else {
