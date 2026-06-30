@@ -57,7 +57,8 @@
     "summary": "auto",
     "effort": "effort",
     "model": "model",
-    "serviceTier": null
+    "serviceTier": null,
+    "outputSchema": null
   }
 }
 {

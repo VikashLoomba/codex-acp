@@ -590,6 +590,11 @@ export class CodexAcpClient {
             effort: effort,
             model: modelId.model,
             serviceTier: serviceTier,
+            // agentprism patch: forward a turn-level JSON Schema so the Codex App Server
+            // constrains the FINAL assistant message (turn/start.outputSchema -> Responses
+            // API strict mode). Supplied by @automatalabs/acp-agents via the prompt's
+            // _meta["agentprism/outputSchema"]; null when no schema is set.
+            outputSchema: (request._meta as any)?.["agentprism/outputSchema"] ?? null,
         }, onTurnStarted);
     }
 
