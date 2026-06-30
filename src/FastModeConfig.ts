@@ -1,4 +1,5 @@
 import type {SessionConfigOption} from "@agentclientprotocol/sdk";
+import type * as acp from "@agentclientprotocol/sdk";
 import type {ServiceTier} from "./app-server";
 import type {Model} from "./app-server/v2";
 
@@ -16,7 +17,22 @@ export function resolveFastServiceTier(fastModeEnabled: boolean, currentModelSup
     return fastModeEnabled && currentModelSupportsFast ? "fast" : null;
 }
 
-export function createFastModeConfigOption(fastModeEnabled: boolean): SessionConfigOption {
+export function clientSupportsBooleanConfigOptions(clientCapabilities?: acp.ClientCapabilities | null): boolean {
+    return clientCapabilities?.session?.configOptions?.boolean != null;
+}
+
+export function createFastModeConfigOption(fastModeEnabled: boolean, useBooleanConfigOption = false): SessionConfigOption {
+    if (useBooleanConfigOption) {
+        return {
+            id: FAST_MODE_CONFIG_ID,
+            name: "Fast mode",
+            description: FAST_MODE_DESCRIPTION,
+            category: FAST_MODE_CONFIG_ID,
+            type: "boolean",
+            currentValue: fastModeEnabled,
+        };
+    }
+
     return {
         id: FAST_MODE_CONFIG_ID,
         name: "Fast mode",
