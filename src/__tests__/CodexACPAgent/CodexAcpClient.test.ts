@@ -453,6 +453,107 @@ describe('ACP server test', { timeout: 40_000 }, () => {
         });
     });
 
+    it('forwards baseInstructions/developerInstructions from _meta into thread/start', async () => {
+        const mockFixture = createCodexMockTestFixture();
+        const codexAcpClient = mockFixture.getCodexAcpClient();
+        const codexAppServerClient = mockFixture.getCodexAppServerClient();
+
+        vi.spyOn(codexAppServerClient, "skillsExtraRootsSet").mockResolvedValue(undefined);
+        vi.spyOn(codexAppServerClient, "listSkills").mockResolvedValue({data: []});
+        const threadStartSpy = vi.spyOn(codexAppServerClient, "threadStart").mockResolvedValue({
+            thread: {id: "thread-id"} as any,
+            model: "gpt-5",
+            reasoningEffort: "medium",
+            serviceTier: null,
+        } as any);
+        vi.spyOn(codexAppServerClient, "listModels").mockResolvedValue({
+            data: [createTestModel({id: "gpt-5"})],
+            nextCursor: null,
+        });
+
+        await codexAcpClient.newSession({
+            cwd: "/workspace",
+            mcpServers: [],
+            _meta: {
+                baseInstructions: "Only use TypeScript.",
+                developerInstructions: "Prefer functional style.",
+            },
+        });
+
+        const threadStartRequest = threadStartSpy.mock.calls[0]![0];
+        expect(threadStartRequest.baseInstructions).toBe("Only use TypeScript.");
+        expect(threadStartRequest.developerInstructions).toBe("Prefer functional style.");
+    });
+
+    it('forwards baseInstructions/developerInstructions from _meta into thread/resume on resume and load', async () => {
+        const mockFixture = createCodexMockTestFixture();
+        const codexAcpClient = mockFixture.getCodexAcpClient();
+        const codexAppServerClient = mockFixture.getCodexAppServerClient();
+
+        vi.spyOn(codexAppServerClient, "skillsExtraRootsSet").mockResolvedValue(undefined);
+        vi.spyOn(codexAppServerClient, "listSkills").mockResolvedValue({data: []});
+        const threadResumeSpy = vi.spyOn(codexAppServerClient, "threadResume").mockResolvedValue({
+            thread: {id: "thread-id"} as any,
+            model: "gpt-5",
+            reasoningEffort: "medium",
+            serviceTier: null,
+        } as any);
+        vi.spyOn(codexAppServerClient, "threadRead").mockResolvedValue({
+            thread: {id: "thread-id"} as any,
+        });
+        vi.spyOn(codexAppServerClient, "listModels").mockResolvedValue({
+            data: [createTestModel({id: "gpt-5"})],
+            nextCursor: null,
+        });
+
+        await codexAcpClient.resumeSession({
+            sessionId: "resume-id",
+            cwd: "/workspace",
+            _meta: {baseInstructions: "resume-base", developerInstructions: "resume-dev"},
+        });
+        await codexAcpClient.loadSession({
+            sessionId: "load-id",
+            cwd: "/workspace",
+            mcpServers: [],
+            _meta: {baseInstructions: "load-base", developerInstructions: "load-dev"},
+        });
+
+        expect(threadResumeSpy.mock.calls[0]![0].baseInstructions).toBe("resume-base");
+        expect(threadResumeSpy.mock.calls[0]![0].developerInstructions).toBe("resume-dev");
+        expect(threadResumeSpy.mock.calls[1]![0].baseInstructions).toBe("load-base");
+        expect(threadResumeSpy.mock.calls[1]![0].developerInstructions).toBe("load-dev");
+    });
+
+    it('leaves instructions unset when _meta omits them and rejects non-string values', async () => {
+        const mockFixture = createCodexMockTestFixture();
+        const codexAcpClient = mockFixture.getCodexAcpClient();
+        const codexAppServerClient = mockFixture.getCodexAppServerClient();
+
+        vi.spyOn(codexAppServerClient, "skillsExtraRootsSet").mockResolvedValue(undefined);
+        vi.spyOn(codexAppServerClient, "listSkills").mockResolvedValue({data: []});
+        const threadStartSpy = vi.spyOn(codexAppServerClient, "threadStart").mockResolvedValue({
+            thread: {id: "thread-id"} as any,
+            model: "gpt-5",
+            reasoningEffort: "medium",
+            serviceTier: null,
+        } as any);
+        vi.spyOn(codexAppServerClient, "listModels").mockResolvedValue({
+            data: [createTestModel({id: "gpt-5"})],
+            nextCursor: null,
+        });
+
+        await codexAcpClient.newSession({cwd: "/workspace", mcpServers: []});
+        const threadStartRequest = threadStartSpy.mock.calls[0]![0];
+        expect(threadStartRequest.baseInstructions).toBeUndefined();
+        expect(threadStartRequest.developerInstructions).toBeUndefined();
+
+        await expect(codexAcpClient.newSession({
+            cwd: "/workspace",
+            mcpServers: [],
+            _meta: {baseInstructions: 7},
+        } as unknown as acp.NewSessionRequest)).rejects.toThrow("baseInstructions must be a string");
+    });
+
     it('uses configured model provider when resuming sessions without an explicit provider', async () => {
         const mockFixture = createCodexMockTestFixture();
         const codexAcpClient = mockFixture.getCodexAcpClient();
