@@ -5,6 +5,7 @@ import { createMockConnections } from './test-utils';
 import {getCodexAuthMethods} from "../../CodexAuthMethod";
 import {CodexAcpClient} from "../../CodexAcpClient";
 import {CodexAppServerClient} from "../../CodexAppServerClient";
+import {CUSTOM_CAPABILITY_NAMESPACE, customAgentCapabilities} from "../../CustomCapabilities";
 import packageJson from "../../../package.json";
 
 describe('CodexACPAgent - initialize', () => {
@@ -58,8 +59,30 @@ describe('CodexACPAgent - initialize', () => {
                     http: true,
                     sse: false,
                 },
+                _meta: {
+                    "@automatalabs/codex-acp": {
+                        outputSchema: true,
+                        baseInstructions: true,
+                        developerInstructions: true,
+                    },
+                },
             },
             authMethods: getCodexAuthMethods(),
+        });
+    });
+
+    it('advertises the fork custom capabilities via agentCapabilities._meta', async () => {
+        const params: acp.InitializeRequest = {
+            protocolVersion: acp.PROTOCOL_VERSION
+        };
+
+        const result = await agent.initialize(params);
+
+        expect(result.agentCapabilities?._meta).toEqual(customAgentCapabilities);
+        expect(result.agentCapabilities?._meta?.[CUSTOM_CAPABILITY_NAMESPACE]).toEqual({
+            outputSchema: true,
+            baseInstructions: true,
+            developerInstructions: true,
         });
     });
 
