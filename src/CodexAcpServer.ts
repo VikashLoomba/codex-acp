@@ -66,6 +66,7 @@ import {
     resolveFastServiceTier,
 } from "./FastModeConfig";
 import packageJson from "../package.json";
+import {customAgentCapabilities} from "./CustomCapabilities";
 import {isJetBrains2026_1Client} from "./JBUtils";
 import {resolveTerminalOutputMode, type TerminalOutputMode} from "./TerminalOutputMode";
 import {
@@ -220,7 +221,8 @@ export class CodexAcpServer {
                     acp: false,
                     http: true,
                     sse: false
-                }
+                },
+                _meta: customAgentCapabilities,
             },
             authMethods: getCodexAuthMethods(_params.clientCapabilities),
         };
