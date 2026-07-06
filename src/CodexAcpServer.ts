@@ -13,6 +13,7 @@ import type {
     Model,
     ReasoningEffortOption,
     Thread,
+    ThreadGoalStatus,
     ThreadItem,
     TurnCompletedNotification,
     UserInput
@@ -56,6 +57,7 @@ import {
     formatWebSearchTitle,
 } from "./CodexToolCallMapper";
 import {
+    clientSupportsBooleanConfigOptions,
     createFastModeConfigOption,
     FAST_MODE_CONFIG_ID,
     FAST_MODE_OFF,
@@ -66,10 +68,15 @@ import {
 import packageJson from "../package.json";
 import {isJetBrains2026_1Client} from "./JBUtils";
 import {resolveTerminalOutputMode, type TerminalOutputMode} from "./TerminalOutputMode";
+import {
+    createAgentTextMessageChunk,
+    createAgentTextThoughtChunk,
+    createUserMessageChunk,
+} from "./ContentChunks";
 
 export interface ThreadGoalSnapshot {
     objective: string;
-    status: string;
+    status: ThreadGoalStatus;
     tokenBudget: number | null;
 }
 
@@ -138,6 +145,7 @@ export class CodexAcpServer {
     private readonly availableCommands: CodexCommands;
     private clientInfo: acp.Implementation | null;
     private terminalOutputMode: TerminalOutputMode;
+    private booleanConfigOptionsSupported: boolean;
 
     private readonly sessions: Map<string, SessionState>;
     private readonly pendingMcpStartupSessions: Map<string, PendingMcpStartupSession>;
@@ -168,6 +176,7 @@ export class CodexAcpServer {
         this.getRecentStderr = getRecentStderr ?? (() => "");
         this.clientInfo = null;
         this.terminalOutputMode = "terminal_output_delta";
+        this.booleanConfigOptionsSupported = false;
         this.availableCommands = new CodexCommands(
             connection,
             codexAcpClient,
@@ -182,6 +191,7 @@ export class CodexAcpServer {
         logger.log("Initialize request received");
         this.clientInfo = _params.clientInfo ?? null;
         this.terminalOutputMode = resolveTerminalOutputMode(_params.clientCapabilities);
+        this.booleanConfigOptionsSupported = clientSupportsBooleanConfigOptions(_params.clientCapabilities);
         await this.runWithProcessCheck(() => this.codexAcpClient.initialize(_params));
         return {
             protocolVersion: acp.PROTOCOL_VERSION,
@@ -657,23 +667,18 @@ export class CodexAcpServer {
         const sessionState = this.sessions.get(params.sessionId);
         if (!sessionState) throw new Error(`Session ${params.sessionId} not found`);
 
-        if (typeof params.value !== "string") {
-            throw RequestError.invalidParams();
-        }
-        const value = params.value;
-
         switch (params.configId) {
             case FAST_MODE_CONFIG_ID:
-                this.applyFastModeChange(sessionState, value);
+                this.applyFastModeChange(sessionState, params);
                 break;
             case MODE_CONFIG_ID:
-                this.applyModeChange(sessionState, value);
+                this.applyModeChange(sessionState, this.stringConfigValue(params));
                 break;
             case MODEL_CONFIG_ID:
-                this.applyModelChange(sessionState, value);
+                this.applyModelChange(sessionState, this.stringConfigValue(params));
                 break;
             case REASONING_EFFORT_CONFIG_ID:
-                this.applyReasoningEffortChange(sessionState, value);
+                this.applyReasoningEffortChange(sessionState, this.stringConfigValue(params));
                 break;
             default:
                 throw RequestError.invalidParams();
@@ -684,11 +689,23 @@ export class CodexAcpServer {
         };
     }
 
-    private applyFastModeChange(sessionState: SessionState, value: string): void {
+    private applyFastModeChange(sessionState: SessionState, params: acp.SetSessionConfigOptionRequest): void {
+        const value = params.value;
+        if (typeof value === "boolean") {
+            sessionState.fastModeEnabled = value;
+            return;
+        }
         if (value !== FAST_MODE_ON && value !== FAST_MODE_OFF) {
             throw RequestError.invalidParams();
         }
         sessionState.fastModeEnabled = value === FAST_MODE_ON;
+    }
+
+    private stringConfigValue(params: acp.SetSessionConfigOptionRequest): string {
+        if (typeof params.value !== "string") {
+            throw RequestError.invalidParams();
+        }
+        return params.value;
     }
 
     private applyModeChange(sessionState: SessionState, value: string): void {
@@ -784,9 +801,12 @@ export class CodexAcpServer {
                 createReasoningEffortConfigOption(sessionState.supportedReasoningEfforts, currentModelId.effort),
             );
         }
-        if (sessionState.currentModelSupportsFast) {
-            configOptions.push(createFastModeConfigOption(sessionState.fastModeEnabled));
-        }
+      if (sessionState.currentModelSupportsFast) {
+        configOptions.push(createFastModeConfigOption(
+          sessionState.fastModeEnabled,
+          this.booleanConfigOptionsSupported,
+        ));
+      }
         return configOptions;
     }
 
@@ -966,6 +986,7 @@ export class CodexAcpServer {
             case "agentMessage":
                 return [{
                     sessionUpdate: "agent_message_chunk",
+                    messageId: item.id,
                     content: { type: "text", text: item.text },
                 }];
             case "reasoning":
@@ -1005,13 +1026,11 @@ export class CodexAcpServer {
 
     private createUserMessageUpdates(item: ThreadItem & { type: "userMessage" }): UpdateSessionEvent[] {
         const updates: UpdateSessionEvent[] = [];
+        const messageId = item.id;
         for (const input of item.content) {
             const blocks = this.userInputToContentBlocks(input);
             for (const block of blocks) {
-                updates.push({
-                    sessionUpdate: "user_message_chunk",
-                    content: block,
-                });
+                updates.push(createUserMessageChunk(block, messageId));
             }
         }
         return updates;
@@ -1019,10 +1038,8 @@ export class CodexAcpServer {
 
     private createReasoningUpdates(item: ThreadItem & { type: "reasoning" }): UpdateSessionEvent[] {
         const parts = item.summary.length > 0 ? item.summary : item.content;
-        return parts.map((text) => ({
-            sessionUpdate: "agent_thought_chunk",
-            content: { type: "text", text: text },
-        }));
+        const messageId = item.id;
+        return parts.map((text) => createAgentTextThoughtChunk(text, messageId));
     }
 
     private createWebSearchUpdate(
@@ -1589,13 +1606,7 @@ export class CodexAcpServer {
         }
         await this.connection.notify(acp.methods.client.session.update, {
             sessionId,
-            update: {
-                sessionUpdate: "agent_message_chunk",
-                content: {
-                    type: "text",
-                    text: "*Conversation interrupted*"
-                }
-            }
+            update: createAgentTextMessageChunk("*Conversation interrupted*"),
         });
     }
 
@@ -1674,26 +1685,33 @@ function mergeHistoryUpdates(
         merged.push(update);
     };
 
-    const flushFallbackThrough = (targetKey: string): boolean => {
-        const matchIndex = responseItemFallbackUpdates.findIndex((update, index) => (
-            index >= fallbackIndex && historyUpdateKey(update) === targetKey
-        ));
-        if (matchIndex === -1) {
-            return false;
+    const flushFallbackBeforeMatchingDuplicate = (targetUpdate: UpdateSessionEvent): void => {
+        const targetKey = historyUpdateKey(targetUpdate);
+        const targetContentKey = historyUpdateContentKey(targetUpdate);
+        if (!targetKey && !targetContentKey) {
+            return;
         }
 
-        while (fallbackIndex <= matchIndex) {
+        const matchIndex = responseItemFallbackUpdates.findIndex((update, index) => (
+            index >= fallbackIndex
+            && (
+                (targetKey !== null && historyUpdateKey(update) === targetKey)
+                || (targetContentKey !== null && historyUpdateContentKey(update) === targetContentKey)
+            )
+        ));
+        if (matchIndex === -1) {
+            return;
+        }
+
+        while (fallbackIndex < matchIndex) {
             pushUpdate(responseItemFallbackUpdates[fallbackIndex]!);
             fallbackIndex += 1;
         }
-        return true;
+        fallbackIndex += 1;
     };
 
     for (const update of threadUpdates) {
-        const key = historyUpdateKey(update);
-        if (key && flushFallbackThrough(key)) {
-            continue;
-        }
+        flushFallbackBeforeMatchingDuplicate(update);
         pushUpdate(update);
     }
 
@@ -1710,13 +1728,24 @@ function historyUpdateKey(update: UpdateSessionEvent): string | null {
         case "user_message_chunk":
         case "agent_message_chunk":
         case "agent_thought_chunk":
-            return `${update.sessionUpdate}:${JSON.stringify(update.content)}`;
+            return `${update.sessionUpdate}:${update.messageId ?? ""}:${JSON.stringify(update.content)}`;
         case "tool_call":
             return `tool_call:${update.toolCallId}:start`;
         case "tool_call_update":
             return `tool_call:${update.toolCallId}:update`;
         default:
             return null;
+    }
+}
+
+function historyUpdateContentKey(update: UpdateSessionEvent): string | null {
+    switch (update.sessionUpdate) {
+        case "user_message_chunk":
+        case "agent_message_chunk":
+        case "agent_thought_chunk":
+            return `${update.sessionUpdate}:${JSON.stringify(update.content)}`;
+        default:
+            return historyUpdateKey(update);
     }
 }
 
