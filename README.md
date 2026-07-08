@@ -1,17 +1,21 @@
-# ACP adapter for Codex CLI
+# ACP adapter for Codex CLI (`@automatalabs/codex-acp`)
 
-[![npm version](https://img.shields.io/npm/v/%40agentclientprotocol%2Fcodex-acp)](https://www.npmjs.com/package/@agentclientprotocol/codex-acp)
+[![npm version](https://img.shields.io/npm/v/%40automatalabs%2Fcodex-acp)](https://www.npmjs.com/package/@automatalabs/codex-acp)
 
 Use [OpenAI Codex](https://github.com/openai/codex) from [Agent Client Protocol](https://agentclientprotocol.com/) clients.
 
 `codex-acp` is a stdio ACP agent server. It starts the Codex App Server, translates ACP requests into Codex operations, and maps Codex events back into the client.
+
+This package is a fork of [`agentclientprotocol/codex-acp`](https://github.com/agentclientprotocol/codex-acp), regularly synced with upstream. On top of upstream it exposes Codex App Server features not (yet) piped through the ACP interface — turn-level structured output (`outputSchema`) and per-session instruction overrides — and advertises them under `agentCapabilities._meta` so clients can feature-detect before sending them (see the fork sections below).
 
 ## Features
 
 - ChatGPT, API key, and client-provided custom gateway authentication.
 - Model, reasoning effort, fast mode, approval, and sandbox mode configuration.
 - Text prompts, embedded context, images, resource links, and additional workspace directories.
-- Per-session base and developer instruction overrides via request `_meta` (see below).
+- Turn-level structured output: a JSON Schema on the prompt's `_meta.outputSchema` constrains the final assistant message (fork extension, see below).
+- Per-session base and developer instruction overrides via request `_meta` (fork extension, see below).
+- Fork extensions advertised under `agentCapabilities._meta["@automatalabs/codex-acp"]` for client-side feature detection.
 - Shell command, file change, permission request, MCP tool call, terminal output, reasoning, plan, web search, image generation, image view, token usage, and review events.
 - Client-provided MCP servers over command-based stdio config and HTTP transport.
 - Slash commands: `/status`, `/mcp`, `/skills`, `/review`, `/review-branch`, `/review-commit`, `/compact`, and `/logout`, as well as configured skills.
@@ -21,20 +25,20 @@ Use [OpenAI Codex](https://github.com/openai/codex) from [Agent Client Protocol]
 Run the published package directly:
 
 ```bash
-npx -y @agentclientprotocol/codex-acp
+npx -y @automatalabs/codex-acp
 ```
 
 Or install it globally:
 
 ```bash
-npm install -g @agentclientprotocol/codex-acp
+npm install -g @automatalabs/codex-acp
 codex-acp --version
 ```
 
 The npm package includes a compatible `@openai/codex` dependency. Set `CODEX_PATH` only when you want the adapter to run a different Codex binary:
 
 ```bash
-CODEX_PATH=/path/to/codex npx -y @agentclientprotocol/codex-acp
+CODEX_PATH=/path/to/codex npx -y @automatalabs/codex-acp
 ```
 
 ## Authentication
@@ -82,6 +86,51 @@ rejected with an invalid-params error. Example `session/new` params:
   }
 }
 ```
+
+## Structured output (turn-level `outputSchema`)
+
+Clients can constrain a turn's **final assistant message** to a JSON Schema by setting the bare
+`outputSchema` key on the `session/prompt` request's `_meta`. The schema is forwarded verbatim
+into the Codex App Server's `turn/start.outputSchema` (OpenAI Responses API strict mode); when
+the key is absent the turn is unconstrained. The key is per-turn — each `session/prompt` sets
+(or omits) it independently. Example `session/prompt` params:
+
+```jsonc
+{
+  "sessionId": "sess-123",
+  "prompt": [{ "type": "text", "text": "List the three largest files." }],
+  "_meta": {
+    "outputSchema": {
+      "type": "object",
+      "properties": { "files": { "type": "array", "items": { "type": "string" } } },
+      "required": ["files"],
+      "additionalProperties": false
+    }
+  }
+}
+```
+
+## Fork capability advertisement
+
+So clients can feature-detect the fork's non-standard `_meta` inputs instead of sending them
+blind, the initialize response advertises them under the fork's package name (per the ACP
+extensibility convention):
+
+```jsonc
+"agentCapabilities": {
+  "_meta": {
+    "@automatalabs/codex-acp": {
+      "outputSchema": true,           // session/prompt _meta.outputSchema (see above)
+      "baseInstructions": true,       // session-scoped instruction overrides (see above)
+      "developerInstructions": true
+    }
+  }
+}
+```
+
+Each flag is named exactly like the bare `_meta` wire key it gates. A client that sees the
+namespace object should send a gated key only when its flag is `true`; clients that predate the
+advertisement can continue sending the keys blind (the adapter accepts them regardless).
 
 ## Development
 
