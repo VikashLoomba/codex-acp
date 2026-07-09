@@ -66,6 +66,7 @@ import {
     resolveFastServiceTier,
 } from "./FastModeConfig";
 import packageJson from "../package.json";
+import {ClientFileSystem} from "./ClientFileSystem";
 import {customAgentCapabilities} from "./CustomCapabilities";
 import {isJetBrains2026_1Client} from "./JBUtils";
 import {resolveTerminalOutputMode, type TerminalOutputMode} from "./TerminalOutputMode";
@@ -147,6 +148,7 @@ export class CodexAcpServer {
     private clientInfo: acp.Implementation | null;
     private terminalOutputMode: TerminalOutputMode;
     private booleanConfigOptionsSupported: boolean;
+    private clientFileSystem: ClientFileSystem;
 
     private readonly sessions: Map<string, SessionState>;
     private readonly pendingMcpStartupSessions: Map<string, PendingMcpStartupSession>;
@@ -178,6 +180,7 @@ export class CodexAcpServer {
         this.clientInfo = null;
         this.terminalOutputMode = "terminal_output_delta";
         this.booleanConfigOptionsSupported = false;
+        this.clientFileSystem = new ClientFileSystem(connection, null);
         this.availableCommands = new CodexCommands(
             connection,
             codexAcpClient,
@@ -193,6 +196,7 @@ export class CodexAcpServer {
         this.clientInfo = _params.clientInfo ?? null;
         this.terminalOutputMode = resolveTerminalOutputMode(_params.clientCapabilities);
         this.booleanConfigOptionsSupported = clientSupportsBooleanConfigOptions(_params.clientCapabilities);
+        this.clientFileSystem = new ClientFileSystem(this.connection, _params.clientCapabilities?.fs ?? null);
         await this.runWithProcessCheck(() => this.codexAcpClient.initialize(_params));
         return {
             protocolVersion: acp.PROTOCOL_VERSION,
@@ -994,7 +998,7 @@ export class CodexAcpServer {
             case "reasoning":
                 return this.createReasoningUpdates(item);
             case "fileChange":
-                return [await createFileChangeUpdate(item)];
+                return [await createFileChangeUpdate(item, this.clientFileSystem.createFileReader(sessionState.sessionId))];
             case "commandExecution": {
                 const updates = [await createCommandExecutionUpdate(item)];
                 const completeUpdate = createCommandExecutionCompleteUpdate(item, sessionState.terminalOutputMode);
@@ -1437,7 +1441,11 @@ export class CodexAcpServer {
         const disposePromptRequestCancellation = this.observePromptRequestCancellation(signal, sessionState, activePrompt);
 
         try {
-            const eventHandler = new CodexEventHandler(this.connection, sessionState);
+            const eventHandler = new CodexEventHandler(
+                this.connection,
+                sessionState,
+                this.clientFileSystem.createFileReader(params.sessionId),
+            );
             const approvalHandler = new CodexApprovalHandler(this.connection, sessionState, activePrompt.signal);
             const elicitationHandler = new CodexElicitationHandler(this.connection, sessionState, activePrompt.signal);
             await this.codexAcpClient.subscribeToSessionEvents(params.sessionId,

@@ -51,6 +51,7 @@ import {
     createMcpToolCallUpdate,
     createWebSearchCompleteUpdate,
     createWebSearchStartUpdate,
+    type FileContentReader,
     fuzzyFileSearchToolCallId,
 } from "./CodexToolCallMapper";
 import { stripShellPrefix } from "./CommandUtils";
@@ -66,6 +67,7 @@ export class CodexEventHandler {
 
     private readonly connection: AcpClientConnection;
     private readonly sessionState: SessionState;
+    private readonly readFileContent: FileContentReader | undefined;
     private failure: RequestError | null = null;
     private readonly activeFuzzyFileSearchSessions = new Set<string>();
     private readonly activeGuardianApprovalReviews = new Set<string>();
@@ -75,9 +77,14 @@ export class CodexEventHandler {
     private readonly terminalCommandIds = new Set<string>();
     private readonly terminalCommandOutputIds = new Set<string>();
 
-    constructor(connection: AcpClientConnection, sessionState: SessionState) {
+    constructor(
+        connection: AcpClientConnection,
+        sessionState: SessionState,
+        readFileContent?: FileContentReader,
+    ) {
         this.connection = connection;
         this.sessionState = sessionState;
+        this.readFileContent = readFileContent;
     }
 
     getFailure(): RequestError | null {
@@ -307,7 +314,7 @@ export class CodexEventHandler {
     private async createItemEvent(event: ItemStartedNotification): Promise<UpdateSessionEvent | null> {
         switch (event.item.type) {
             case "fileChange":
-                return await createFileChangeUpdate(event.item);
+                return await createFileChangeUpdate(event.item, this.readFileContent);
             case "commandExecution": {
                 if (commandExecutionUsesTerminalOutput(event.item)) {
                     this.terminalCommandIds.add(event.item.id);

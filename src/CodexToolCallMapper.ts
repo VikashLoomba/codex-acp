@@ -55,12 +55,20 @@ function toAcpStatus(status: CodexItemStatus): AcpToolCallStatus {
     }
 }
 
+/**
+ * Reads a text file, returning null when the file cannot be read.
+ * Injected so file content can come from the client's `fs/read_text_file`
+ * when the client advertises the `fs.readTextFile` capability.
+ */
+export type FileContentReader = (path: string) => Promise<string | null>;
+
 export async function createFileChangeUpdate(
-    item: ThreadItem & { type: "fileChange" }
+    item: ThreadItem & { type: "fileChange" },
+    readFileContent: FileContentReader = readLocalFileContent,
 ): Promise<UpdateSessionEvent> {
     const patches: ToolCallContent[] = [];
     for (const change of item.changes) {
-        const content = await createPatchContent(change);
+        const content = await createPatchContent(change, readFileContent);
         if (content) patches.push(content);
         // ignore unparseable diffs
     }
@@ -693,7 +701,10 @@ function createContent(content: ContentBlock): ToolCallContent {
     };
 }
 
-async function createPatchContent(change: FileUpdateChange): Promise<ToolCallContent | null> {
+async function createPatchContent(
+    change: FileUpdateChange,
+    readFileContent: FileContentReader,
+): Promise<ToolCallContent | null> {
     try {
         switch (change.kind.type) {
             case "add":
@@ -701,7 +712,7 @@ async function createPatchContent(change: FileUpdateChange): Promise<ToolCallCon
             case "delete":
                 return await createDeleteFileContent(change);
             case "update":
-                return await createUpdateFileContent(change);
+                return await createUpdateFileContent(change, readFileContent);
         }
     } catch (error) {
         logger.log(`Error processing file update change: ${error}`);
@@ -721,7 +732,10 @@ async function createAddFileContent(change: FileUpdateChange): Promise<ToolCallC
     };
 }
 
-async function createUpdateFileContent(change: FileUpdateChange): Promise<ToolCallContent | null> {
+async function createUpdateFileContent(
+    change: FileUpdateChange,
+    readFileContent: FileContentReader,
+): Promise<ToolCallContent | null> {
     if (change.kind.type !== "update") return null;
 
     const unifiedDiff = recoverCorruptedDiff(change.diff);
@@ -789,7 +803,7 @@ async function createDeleteFileContent(change: FileUpdateChange): Promise<ToolCa
     }
 }
 
-async function readFileContent(filePath: string): Promise<string | null> {
+async function readLocalFileContent(filePath: string): Promise<string | null> {
     return await readFile(filePath, { encoding: "utf8" }).catch(() => null);
 }
 

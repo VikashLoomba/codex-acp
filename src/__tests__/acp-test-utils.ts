@@ -42,6 +42,12 @@ function normalizeAcpConnectionEvent(event: MethodCallEvent): MethodCallEvent {
     if (event.method === "request" && event.args[0] === acp.methods.client.session.requestPermission) {
         return {method: "requestPermission", args: [event.args[1]]};
     }
+    if (event.method === "request" && event.args[0] === acp.methods.client.fs.readTextFile) {
+        return {method: "readTextFile", args: [event.args[1]]};
+    }
+    if (event.method === "request" && event.args[0] === acp.methods.client.fs.writeTextFile) {
+        return {method: "writeTextFile", args: [event.args[1]]};
+    }
     if (event.method === "notify" && event.args[0] === acp.methods.client.session.update) {
         return {method: "sessionUpdate", args: [event.args[1]]};
     }
@@ -240,6 +246,14 @@ export interface CodexMockTestFixture extends TestFixture {
     setPermissionResponse(response: RequestPermissionResponse): void,
 }
 
+export interface CodexMockTestFixtureOptions {
+    /**
+     * Handles ACP client requests made by the agent (e.g. `fs/read_text_file`).
+     * Return `undefined` to fall through to the default mock behavior.
+     */
+    acpRequestHandler?: (method: string, params: unknown) => unknown,
+}
+
 /**
  * Creates a test fixture with a mock Codex connection.
  * Use for unit tests that don't need a real Codex binary.
@@ -247,7 +261,7 @@ export interface CodexMockTestFixture extends TestFixture {
  * Provides `sendServerRequest()` to simulate server-initiated requests (e.g., approval requests).
  * Provides `setPermissionResponse()` to control ACP permission dialog responses.
  */
-export function createCodexMockTestFixture(): CodexMockTestFixture {
+export function createCodexMockTestFixture(options?: CodexMockTestFixtureOptions): CodexMockTestFixture {
     let unhandledNotificationHandler: ((notification: any) => void) | null = null;
     const requestHandlers = new Map<string, (params: unknown) => Promise<unknown>>();
 
@@ -275,6 +289,10 @@ export function createCodexMockTestFixture(): CodexMockTestFixture {
     returnValues.set('request', (args) => {
         if (args[0] === acp.methods.client.session.requestPermission) {
             return permissionState.response;
+        }
+        const handled = options?.acpRequestHandler?.(args[0], args[1]);
+        if (handled !== undefined) {
+            return handled;
         }
         return { mock: "Mocked return" };
     });
