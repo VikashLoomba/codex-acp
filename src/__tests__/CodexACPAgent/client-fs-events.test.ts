@@ -12,16 +12,13 @@ import {
 } from '../acp-test-utils';
 import { AgentMode } from '../../AgentMode';
 
-const { mockDiskFiles, mockDiskWrites, mockDiskFileContent, clearMockDiskFiles } = vi.hoisted(() => {
+const { mockDiskFiles, mockDiskFileContent, clearMockDiskFiles } = vi.hoisted(() => {
     const files = new Map<string, string>();
-    const writes = new Map<string, string>();
     return {
         mockDiskFiles: files,
-        mockDiskWrites: writes,
         mockDiskFileContent: (path: string, content: string) => files.set(path, content),
         clearMockDiskFiles: () => {
             files.clear();
-            writes.clear();
         },
     };
 });
@@ -33,9 +30,6 @@ vi.mock('node:fs/promises', () => ({
             return content;
         }
         throw new Error(`ENOENT: no such file or directory, open '${path}'`);
-    },
-    writeFile: async (path: string, content: string) => {
-        mockDiskWrites.set(path, content);
     },
 }));
 
@@ -175,39 +169,6 @@ describe('ClientFileSystem', () => {
         } as unknown as AcpClientConnection;
         return { connection, requests };
     }
-
-    it('writes through the client when fs.writeTextFile is advertised', async () => {
-        const { connection, requests } = createConnection(() => ({}));
-        const fileSystem = new ClientFileSystem(connection, { writeTextFile: true });
-
-        await fileSystem.writeTextFile(sessionId, filePath, 'new content');
-
-        expect(requests).toEqual([{
-            method: acp.methods.client.fs.writeTextFile,
-            params: { sessionId, path: filePath, content: 'new content' },
-        }]);
-        expect(mockDiskWrites.size).toBe(0);
-    });
-
-    it('writes to disk when the client does not advertise fs.writeTextFile', async () => {
-        const { connection, requests } = createConnection(() => ({}));
-        const fileSystem = new ClientFileSystem(connection, null);
-
-        await fileSystem.writeTextFile(sessionId, filePath, 'new content');
-
-        expect(requests).toEqual([]);
-        expect(mockDiskWrites.get(filePath)).toBe('new content');
-    });
-
-    it('propagates client write failures instead of writing to disk', async () => {
-        const { connection } = createConnection(() => {
-            throw acp.RequestError.internalError('client write failed');
-        });
-        const fileSystem = new ClientFileSystem(connection, { writeTextFile: true });
-
-        await expect(fileSystem.writeTextFile(sessionId, filePath, 'new content')).rejects.toThrow();
-        expect(mockDiskWrites.size).toBe(0);
-    });
 
     it('returns null when neither the client nor the disk can read the file', async () => {
         const { connection } = createConnection(() => {

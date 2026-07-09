@@ -1,17 +1,18 @@
 import * as acp from "@agentclientprotocol/sdk";
-import {readFile, writeFile} from "node:fs/promises";
+import {readFile} from "node:fs/promises";
 import type {AcpClientConnection} from "./ACPSessionConnection";
 import type {FileContentReader} from "./CodexToolCallMapper";
 import {logger} from "./Logger";
 
 /**
- * File system access that respects the client's advertised `fs` capabilities.
+ * File reads that respect the client's advertised `fs.readTextFile` capability.
  *
- * When the client advertises `fs.readTextFile` / `fs.writeTextFile` in its
- * `clientCapabilities` during `initialize`, file operations are routed through
- * the client (`fs/read_text_file` / `fs/write_text_file`), so reads reflect
- * unsaved editor buffers and writes go through the editor. Otherwise the
- * operations fall back to the local file system.
+ * When the client advertises `fs.readTextFile` in its `clientCapabilities`
+ * during `initialize`, file content is read through the client
+ * (`fs/read_text_file`), so file-change diffs reflect unsaved editor buffers.
+ * Otherwise reads fall back to the local file system. File WRITES are outside
+ * this service's scope: codex applies changes to disk inside its own process
+ * (the app-server protocol delegates no file IO to the client).
  */
 export class ClientFileSystem {
     private readonly connection: AcpClientConnection;
@@ -27,10 +28,6 @@ export class ClientFileSystem {
 
     get canReadTextFile(): boolean {
         return this.capabilities.readTextFile === true;
-    }
-
-    get canWriteTextFile(): boolean {
-        return this.capabilities.writeTextFile === true;
     }
 
     /**
@@ -52,23 +49,6 @@ export class ClientFileSystem {
             }
         }
         return await readFile(path, {encoding: "utf8"}).catch(() => null);
-    }
-
-    /**
-     * Writes a text file through the client's `fs/write_text_file` when the
-     * capability is advertised, otherwise writes to the local file system.
-     * Client-side failures are propagated instead of silently writing to disk
-     * behind the editor's back.
-     */
-    async writeTextFile(sessionId: string, path: string, content: string): Promise<void> {
-        if (this.canWriteTextFile) {
-            await this.connection.request(
-                acp.methods.client.fs.writeTextFile,
-                {sessionId, path, content},
-            );
-            return;
-        }
-        await writeFile(path, content, {encoding: "utf8"});
     }
 
     /**
