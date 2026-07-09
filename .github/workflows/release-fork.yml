@@ -1,0 +1,80 @@
+# Fork-owned release automation: bump -> tag -> GitHub release -> chain-dispatch
+# the OIDC publish. One click, no secrets.
+#
+# Upstream's chain (Version Bump -> tag -> Release) needs a GitHub App token and
+# e2e credentials this repo does not carry, so it cannot run here; this workflow
+# is the fork's release path. npm's trusted publisher for @automatalabs/codex-acp
+# points at publish-oidc.yml specifically, so this workflow never publishes
+# itself — it dispatches that workflow. A workflow_dispatch fired with
+# GITHUB_TOKEN is exempt from the Actions recursion guard, so the chain works
+# token-lessly. (The tag push below deliberately triggers nothing: pushes made
+# with GITHUB_TOKEN don't start workflow runs.)
+name: Release (fork)
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 'semver bump for this release'
+        type: choice
+        default: patch
+        options:
+          - patch
+          - minor
+          - major
+      dry_run:
+        description: 'compute the bump and stop (no push, no release, no publish)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write # push the bump commit + tag, create the GitHub release
+  actions: write # dispatch publish-oidc.yml
+
+concurrency:
+  group: release-fork
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      # No install needed: package.json has no version-lifecycle scripts, and
+      # the build happens in publish-oidc.yml via prepublishOnly.
+      - name: Bump version
+        id: bump
+        run: |
+          NEW_VERSION=$(npm version ${{ inputs.bump }} -m "Release v%s")
+          echo "version=${NEW_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Bumped to ${NEW_VERSION}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Dry run — stop before push
+        if: ${{ inputs.dry_run }}
+        run: |
+          echo "DRY RUN: would push ${{ steps.bump.outputs.version }} + tag to main," \
+               "create the GitHub release, and dispatch Publish (OIDC)."
+
+      - name: Push commit and tag
+        if: ${{ !inputs.dry_run }}
+        run: git push --follow-tags origin main
+
+      - name: Create GitHub release
+        if: ${{ !inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${{ steps.bump.outputs.version }}" --generate-notes
+
+      - name: Dispatch Publish (OIDC)
+        if: ${{ !inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run publish-oidc.yml --ref main
