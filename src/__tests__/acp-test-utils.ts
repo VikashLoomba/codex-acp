@@ -1,5 +1,5 @@
 import * as acp from "@agentclientprotocol/sdk";
-import type {McpServerStdio, RequestPermissionResponse} from "@agentclientprotocol/sdk";
+import type {CreateElicitationResponse, McpServerStdio, RequestPermissionResponse} from "@agentclientprotocol/sdk";
 import {CodexAcpClient} from '../CodexAcpClient';
 import {CodexAppServerClient, type CodexConnectionEvent} from '../CodexAppServerClient';
 import {startCodexConnection} from "../CodexJsonRpcConnection";
@@ -47,6 +47,12 @@ function normalizeAcpConnectionEvent(event: MethodCallEvent): MethodCallEvent {
     }
     if (event.method === "request" && event.args[0] === acp.methods.client.fs.writeTextFile) {
         return {method: "writeTextFile", args: [event.args[1]]};
+    }
+    if (event.method === "request" && event.args[0] === acp.methods.client.elicitation.create) {
+        return {method: "createElicitation", args: [event.args[1]]};
+    }
+    if (event.method === "notify" && event.args[0] === acp.methods.client.elicitation.complete) {
+        return {method: "completeElicitation", args: [event.args[1]]};
     }
     if (event.method === "notify" && event.args[0] === acp.methods.client.session.update) {
         return {method: "sessionUpdate", args: [event.args[1]]};
@@ -244,6 +250,7 @@ export interface CodexMockTestFixture extends TestFixture {
     sendServerNotification(notification: ServerNotification | Record<string, unknown>): void,
     sendServerRequest<T>(method: string, params: unknown): Promise<T>,
     setPermissionResponse(response: RequestPermissionResponse): void,
+    setElicitationResponse(response: CreateElicitationResponse | Promise<CreateElicitationResponse>): void,
 }
 
 export interface CodexMockTestFixtureOptions {
@@ -269,6 +276,9 @@ export function createCodexMockTestFixture(options?: CodexMockTestFixtureOptions
     const permissionState: { response: RequestPermissionResponse } = {
         response: { outcome: { outcome: 'cancelled' } }
     };
+    const elicitationState: { response: CreateElicitationResponse | Promise<CreateElicitationResponse> } = {
+        response: { action: 'cancel' }
+    };
 
     const mockCodexConnection = {
         sendRequest: () => Promise.resolve(undefined),
@@ -289,6 +299,9 @@ export function createCodexMockTestFixture(options?: CodexMockTestFixtureOptions
     returnValues.set('request', (args) => {
         if (args[0] === acp.methods.client.session.requestPermission) {
             return permissionState.response;
+        }
+        if (args[0] === acp.methods.client.elicitation.create) {
+            return elicitationState.response;
         }
         const handled = options?.acpRequestHandler?.(args[0], args[1]);
         if (handled !== undefined) {
@@ -330,6 +343,9 @@ export function createCodexMockTestFixture(options?: CodexMockTestFixtureOptions
         },
         setPermissionResponse(response: RequestPermissionResponse): void {
             permissionState.response = response;
+        },
+        setElicitationResponse(response: CreateElicitationResponse | Promise<CreateElicitationResponse>): void {
+            elicitationState.response = response;
         },
     };
 }

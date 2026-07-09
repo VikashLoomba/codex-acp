@@ -71,6 +71,7 @@ import {customAgentCapabilities} from "./CustomCapabilities";
 import {isJetBrains2026_1Client} from "./JBUtils";
 import {resolveTerminalOutputMode, type TerminalOutputMode} from "./TerminalOutputMode";
 import {
+    createCodexMessagePhaseMeta,
     createAgentTextMessageChunk,
     createAgentTextThoughtChunk,
     createUserMessageChunk,
@@ -146,6 +147,7 @@ export class CodexAcpServer {
     private readonly getRecentStderr: () => string;
     private readonly availableCommands: CodexCommands;
     private clientInfo: acp.Implementation | null;
+    private clientCapabilities: acp.ClientCapabilities | null;
     private terminalOutputMode: TerminalOutputMode;
     private booleanConfigOptionsSupported: boolean;
     private clientFileSystem: ClientFileSystem;
@@ -178,6 +180,7 @@ export class CodexAcpServer {
         this.getExitCode = getExitCode ?? (() => null);
         this.getRecentStderr = getRecentStderr ?? (() => "");
         this.clientInfo = null;
+        this.clientCapabilities = null;
         this.terminalOutputMode = "terminal_output_delta";
         this.booleanConfigOptionsSupported = false;
         this.clientFileSystem = new ClientFileSystem(connection, null);
@@ -194,6 +197,7 @@ export class CodexAcpServer {
     ): Promise<acp.InitializeResponse> {
         logger.log("Initialize request received");
         this.clientInfo = _params.clientInfo ?? null;
+        this.clientCapabilities = _params.clientCapabilities ?? null;
         this.terminalOutputMode = resolveTerminalOutputMode(_params.clientCapabilities);
         this.booleanConfigOptionsSupported = clientSupportsBooleanConfigOptions(_params.clientCapabilities);
         this.clientFileSystem = new ClientFileSystem(this.connection, _params.clientCapabilities?.fs ?? null);
@@ -989,12 +993,15 @@ export class CodexAcpServer {
             case "subAgentActivity":
             case "sleep":
                 return [];
-            case "agentMessage":
+            case "agentMessage": {
+                const meta = createCodexMessagePhaseMeta(item.phase);
                 return [{
                     sessionUpdate: "agent_message_chunk",
                     messageId: item.id,
                     content: { type: "text", text: item.text },
+                    ...(meta ? { _meta: meta } : {}),
                 }];
+            }
             case "reasoning":
                 return this.createReasoningUpdates(item);
             case "fileChange":
@@ -1447,10 +1454,15 @@ export class CodexAcpServer {
                 this.clientFileSystem.createFileReader(params.sessionId),
             );
             const approvalHandler = new CodexApprovalHandler(this.connection, sessionState, activePrompt.signal);
-            const elicitationHandler = new CodexElicitationHandler(this.connection, sessionState, activePrompt.signal);
+            const elicitationHandler = new CodexElicitationHandler(
+                this.connection,
+                sessionState,
+                this.clientCapabilities,
+                activePrompt.signal,
+            );
             await this.codexAcpClient.subscribeToSessionEvents(params.sessionId,
-                (event) => {
-                    elicitationHandler.handleNotification(event);
+                async (event) => {
+                    await elicitationHandler.handleNotification(event);
                     return eventHandler.handleNotification(event);
                 },
                 approvalHandler,
