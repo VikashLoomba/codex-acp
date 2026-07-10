@@ -42,6 +42,7 @@ describe('CodexACPAgent - initialize', () => {
                 auth: {
                     logout: {},
                 },
+                providers: {},
                 loadSession: true,
                 promptCapabilities: {
                     embeddedContext: true,
