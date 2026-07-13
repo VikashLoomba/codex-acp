@@ -404,6 +404,8 @@ export function createTestSessionState(overrides?: Partial<SessionState>): Sessi
         fastModeEnabled: false,
         currentModelSupportsFast: false,
         terminalOutputMode: "terminal_output_delta",
+        sessionTitle: null,
+        sessionTitleSource: "unknown",
         ...overrides,
     };
 }
