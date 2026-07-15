@@ -60,6 +60,7 @@ import {
     createImageGenerationUpdate,
     createImageViewUpdate,
     createMcpToolCallUpdate,
+    createSubAgentActivityUpdate,
     formatWebSearchTitle,
 } from "./CodexToolCallMapper";
 import {
@@ -1185,9 +1186,10 @@ export class CodexAcpServer {
             case "userMessage":
                 return this.createUserMessageUpdates(item);
             case "hookPrompt":
-            case "subAgentActivity":
             case "sleep":
                 return [];
+            case "subAgentActivity":
+                return [createSubAgentActivityUpdate(item, "completed", "tool_call")];
             case "agentMessage": {
                 const meta = createCodexMessagePhaseMeta(item.phase);
                 return [{
