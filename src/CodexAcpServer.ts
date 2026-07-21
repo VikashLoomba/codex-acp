@@ -35,6 +35,7 @@ import {
 import type {TokenCount} from "./TokenCount";
 import {toPromptUsage} from "./TokenCount";
 import {CodexCommands} from "./CodexCommands";
+import {SteeringQueue} from "./SteeringQueue";
 import type {QuotaMeta} from "./QuotaMeta";
 import {logger} from "./Logger";
 import {sanitizeMcpServerName} from "./McpServerName";
@@ -46,9 +47,12 @@ import {
     type LegacySessionModelState,
     type LegacySetSessionModelRequest,
     type LegacySetSessionModelResponse,
+    type SessionSteerRequest,
+    type SessionSteeringResponse,
     GOAL_CONTROL_METHOD,
     isExtMethodRequest,
     LEGACY_SET_SESSION_MODEL_METHOD,
+    SESSION_STEERING_METHOD,
 } from "./AcpExtensions";
 import {
     createCollabAgentToolCallUpdate,
@@ -166,6 +170,7 @@ export class CodexAcpServer {
     private readonly pendingMcpStartupSessions: Map<string, PendingMcpStartupSession>;
     private readonly pendingTurnStarts: Map<string, PendingTurnStart>;
     private readonly activePrompts: Map<string, ActivePrompt>;
+    private readonly steeringQueues: Map<string, SteeringQueue>;
     private readonly closingSessions: Map<string, number>;
     private readonly sessionGenerations: Map<string, number>;
     private readonly sessionOpenGenerations: Map<string, number>;
@@ -181,6 +186,7 @@ export class CodexAcpServer {
         this.pendingMcpStartupSessions = new Map();
         this.pendingTurnStarts = new Map();
         this.activePrompts = new Map();
+        this.steeringQueues = new Map();
         this.closingSessions = new Map();
         this.sessionGenerations = new Map();
         this.sessionOpenGenerations = new Map();
@@ -244,6 +250,11 @@ export class CodexAcpServer {
                 _meta: customAgentCapabilities,
             },
             authMethods: getCodexAuthMethods(_params.clientCapabilities),
+            _meta: {
+                steering: {
+                    supported: true,
+                },
+            },
         };
     }
 
@@ -261,6 +272,8 @@ export class CodexAcpServer {
             }
             case LEGACY_SET_SESSION_MODEL_METHOD:
                 return await this.unstable_setSessionModel(this.parseLegacySetSessionModelParams(methodRequest.params));
+            case SESSION_STEERING_METHOD:
+                return await this.executeOrQueueSteeringRequest(this.parseSessionSteerParams(methodRequest.params));
             case GOAL_CONTROL_METHOD: {
                 const sessionState = this.sessions.get(methodRequest.params.sessionId);
                 if (!sessionState) {
@@ -599,6 +612,7 @@ export class CodexAcpServer {
                 this.pendingMcpStartupSessions.delete(params.sessionId);
                 this.pendingTurnStarts.delete(params.sessionId);
                 this.activePrompts.delete(params.sessionId);
+                this.steeringQueues.delete(params.sessionId);
             }
             this.endSessionCloseFence(params.sessionId);
         }
@@ -868,6 +882,233 @@ export class CodexAcpServer {
         return {
             sessionId: sessionId,
             modelId: modelId,
+        };
+    }
+
+    /**
+     * Handles one incoming steering request, serialising it against any other
+     * steer already in flight for the same session.
+     *
+     * Every session gets its own {@link SteeringQueue}: the request is enqueued
+     * and awaited, so concurrent steers for one session run strictly one at a
+     * time, in arrival order, and can never race to inject into — or start —
+     * rival turns. Steers for different sessions use different queues and run
+     * concurrently. Once the queue drains to idle it is removed from the map,
+     * so no per-session entry leaks after the session goes quiet (the identity
+     * check guards against deleting a queue a later request has since reused).
+     *
+     * @param params The target session id and the prompt to steer with.
+     * @returns Whether the prompt joined the active turn ("injected"), started a
+     *     new one ("startedNewTurn"), or could not be applied ("failed"); see
+     *     {@link performSteeringRequest}.
+     */
+    async executeOrQueueSteeringRequest(params: SessionSteerRequest): Promise<SessionSteeringResponse> {
+        const queue = this.getSteeringQueue(params.sessionId);
+        try {
+            return await queue.enqueue(params);
+        } catch (error) {
+            if (error instanceof RequestError) {
+                throw error;
+            }
+            logger.error(`Steering request for session ${params.sessionId} failed`, error);
+            return {outcome: "failed"};
+        } finally {
+            if (queue.isIdle && this.steeringQueues.get(params.sessionId) === queue) {
+                this.steeringQueues.delete(params.sessionId);
+            }
+        }
+    }
+
+    /**
+     * Returns the steering queue for a session, creating and registering it on
+     * first use.
+     *
+     * @param sessionId The session whose steering queue is required.
+     * @returns The session's existing queue, or a freshly created one.
+     */
+    private getSteeringQueue(sessionId: string): SteeringQueue {
+        let queue = this.steeringQueues.get(sessionId);
+        if (!queue) {
+            queue = new SteeringQueue((params) => this.performSteeringRequest(params));
+            this.steeringQueues.set(sessionId, queue);
+        }
+        return queue;
+    }
+
+    /**
+     * Delivers a steering prompt to the session: injects it into the live turn
+     * when there is one, otherwise starts a new turn.
+     *
+     * @param params The target session id and the prompt to steer with.
+     * @returns "injected" when the prompt joined an existing turn, otherwise the
+     *     outcome of starting a new turn.
+     */
+    private async performSteeringRequest(params: SessionSteerRequest): Promise<SessionSteeringResponse> {
+        logger.log("Steering session requested", {
+            sessionId: params.sessionId,
+            prompt: params.prompt,
+        });
+        const sessionState = this.getSessionState(params.sessionId);
+        this.assertSteerInputSupported(params, sessionState);
+
+        const turnId = await this.getSteerableTurnId(sessionState);
+        if (turnId) {
+            const injected = await this.injectSteerIntoActiveTurn(params, turnId, sessionState);
+            if (injected) {
+                logger.log("Steering session injected", {sessionId: params.sessionId, turnId});
+                return {outcome: "injected"};
+            }
+        }
+        return await this.startNewTurnFromSteering(params);
+    }
+
+    /**
+     * Rejects a steering prompt whose content the active model cannot accept
+     * (currently: image blocks on a text-only model).
+     */
+    private assertSteerInputSupported(params: SessionSteerRequest, sessionState: SessionState): void {
+        const hasImage = params.prompt.some(block => block.type === "image");
+        if (hasImage && !sessionState.supportedInputModalities.includes("image")) {
+            throw RequestError.invalidRequest("The current model does not support image input");
+        }
+    }
+
+    /**
+     * Attempts to inject the prompt into the given running turn.
+     *
+     * A failed injection is fatal only when the turn is still the session's
+     * current turn and Codex reported something other than "no active turn to
+     * steer". Otherwise the turn has already ended underneath us and the caller
+     * should start a new turn instead.
+     *
+     * @returns true when the prompt was injected; false when the caller should
+     *     fall back to starting a new turn.
+     */
+    private async injectSteerIntoActiveTurn(
+        params: SessionSteerRequest,
+        turnId: string,
+        sessionState: SessionState,
+    ): Promise<boolean> {
+        try {
+            await this.runWithProcessCheck(() => this.codexAcpClient.steerTurn({
+                threadId: params.sessionId,
+                turnId,
+                prompt: params.prompt,
+            }));
+            return true;
+        } catch (err) {
+            await this.codexAcpClient.waitForSessionNotifications(params.sessionId);
+            const turnStillActive = sessionState.currentTurnId === turnId;
+            if (turnStillActive && !this.isNoActiveTurnToSteerError(err)) {
+                throw err;
+            }
+            return false;
+        }
+    }
+
+    /**
+     * Starts a new turn from a steering prompt when there is no live turn to
+     * inject into, and returns as soon as that turn is running.
+     *
+     * Waits for any previous prompt to drain first, then re-checks that the
+     * session is not closing — the await above is a window during which a close
+     * request can arrive.
+     *
+     * @param params The target session id and the prompt to steer with.
+     * @returns "startedNewTurn" once the turn is running; throws if the prompt
+     *     fails or is cancelled before the turn starts.
+     */
+    private async startNewTurnFromSteering(params: SessionSteerRequest): Promise<SessionSteeringResponse> {
+        // A prompt can outlive its turn (post-turn cleanup runs before it leaves
+        // activePrompts), so a steer can miss the turn while the prompt is still
+        // winding down. Starting a new turn now would run a second prompt on the
+        // same session, so wait for the current one to drain first (a no-op when idle).
+        const previousPrompt = this.activePrompts.get(params.sessionId);
+        await previousPrompt?.completion;
+        if (this.sessionIsClosing(params.sessionId)) {
+            throw RequestError.invalidRequest(`Session ${params.sessionId} is closing`);
+        }
+
+        return await new Promise<SessionSteeringResponse>((resolve, reject) => {
+            let turnStarted = false;
+            const promptDone = this.prompt(params, undefined, () => {
+                turnStarted = true;
+                logger.log("Steering session started a new turn", {sessionId: params.sessionId});
+                // The new turn is now running. This is the success path: answer the
+                // steer immediately ("a turn was started") and let prompt() finish the
+                // turn in the background.
+                resolve({outcome: "startedNewTurn"});
+            });
+            promptDone.then(
+                (response) => {
+                    if (!turnStarted && response.stopReason === "cancelled") {
+                        // The prompt ended without the turn ever starting, because it
+                        // was cancelled. The steer never took, so fail the request.
+                        reject(RequestError.invalidRequest(`Session ${params.sessionId} was cancelled before the steering turn started`));
+                    } else {
+                        // Either the turn already started (this is a no-op after the
+                        // resolve in the callback above), or the prompt finished
+                        // without ever starting a turn and was not cancelled (e.g. a
+                        // command-only turn). Both count as a successfully accepted steer.
+                        resolve({outcome: "startedNewTurn"});
+                    }
+                },
+                (error: unknown) => {
+                    if (turnStarted) {
+                        // The turn had already started, so the steer was already
+                        // answered "startedNewTurn". This is a failure of a turn running
+                        // in the background — nothing to return, just log it.
+                        logger.error(`Steering-started prompt for session ${params.sessionId} failed`, error);
+                    } else {
+                        // The prompt failed before the turn started. The steer never
+                        // took, so surface the failure to the caller.
+                        reject(error);
+                    }
+                },
+            );
+        });
+    }
+
+    private isNoActiveTurnToSteerError(error: unknown): boolean {
+        const messages = error instanceof Error ? [error.message] : [];
+        if (typeof error === "object" && error !== null && "data" in error) {
+            const data = (error as {data?: unknown}).data;
+            if (typeof data === "string") {
+                messages.push(data);
+            } else if (typeof data === "object" && data !== null && "details" in data) {
+                const details = (data as {details?: unknown}).details;
+                if (typeof details === "string") {
+                    messages.push(details);
+                }
+            }
+        }
+        return messages.some(message => message.toLowerCase().includes("no active turn to steer"));
+    }
+
+    private async getSteerableTurnId(sessionState: SessionState): Promise<string | null> {
+        if (this.sessionIsClosing(sessionState.sessionId)) {
+            return null;
+        }
+        if (sessionState.currentTurnId) {
+            return sessionState.currentTurnId;
+        }
+
+        const pendingTurnStart = this.pendingTurnStarts.get(sessionState.sessionId);
+        if (!pendingTurnStart) {
+            return null;
+        }
+        return await pendingTurnStart.promise;
+    }
+
+    private parseSessionSteerParams(params: Record<string, unknown>): SessionSteerRequest {
+        const sessionId = params["sessionId"];
+        const prompt = params["prompt"];
+        if (typeof sessionId !== "string" || !Array.isArray(prompt)) {
+            throw RequestError.invalidParams();
+        }
+        return {
+            sessionId: sessionId,
+            prompt: prompt as acp.ContentBlock[],
         };
     }
 
@@ -1619,7 +1860,11 @@ export class CodexAcpServer {
         return turnId;
     }
 
-    async prompt(params: acp.PromptRequest, signal?: AbortSignal): Promise<acp.PromptResponse> {
+    async prompt(
+        params: acp.PromptRequest,
+        signal?: AbortSignal,
+        onTurnStarted?: () => void,
+    ): Promise<acp.PromptResponse> {
         logger.log("Prompt received", {
             sessionId: params.sessionId,
             prompt: params.prompt,
@@ -1676,6 +1921,7 @@ export class CodexAcpServer {
                     }
                     sessionState.currentTurnId = turnId;
                     pendingTurnStart?.resolve(turnId);
+                    onTurnStarted?.();
                 },
                 setConfigOption: async (configId, value) => {
                     await this.applySessionConfigOption(sessionState, {
@@ -1765,6 +2011,7 @@ export class CodexAcpServer {
                         }
                         sessionState.currentTurnId = turnId;
                         pendingTurnStart?.resolve(turnId);
+                        onTurnStarted?.();
                     },
                     () => this.promptShouldStop(params.sessionId, activePrompt),
                 ));

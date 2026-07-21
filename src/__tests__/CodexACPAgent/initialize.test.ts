@@ -69,6 +69,11 @@ describe('CodexACPAgent - initialize', () => {
                 },
             },
             authMethods: getCodexAuthMethods(),
+            _meta: {
+                steering: {
+                    supported: true,
+                },
+            },
         });
     });
 
