@@ -72,6 +72,7 @@ export class CodexAcpClient {
     private pendingAccountUpdated: Promise<AccountUpdatedNotification> | null = null;
     private readonly sessionNotificationQueues = new Map<string, Promise<void>>();
     private skillExtraRoots: string[] = [];
+    private configPath: string | null = null;
 
 
     constructor(codexClient: CodexAppServerClient, codexConfig?: JsonObject, modelProvider?: string) {
@@ -86,7 +87,7 @@ export class CodexAcpClient {
     };
 
     async initialize(request: acp.InitializeRequest): Promise<void> {
-        await this.codexClient.initialize({
+        const response = await this.codexClient.initialize({
             capabilities: {
                 experimentalApi: true,
                 requestAttestation: false,
@@ -97,6 +98,11 @@ export class CodexAcpClient {
                 title: request.clientInfo?.title ?? this.defaultClientInfo.title,
             }
         });
+        this.configPath = response?.codexHome ?? null;
+    }
+
+    getHomePath(): string | null {
+        return this.configPath;
     }
 
     async authenticate(authRequest: acp.AuthenticateRequest): Promise<Boolean> {
@@ -521,11 +527,16 @@ export class CodexAcpClient {
 
     private async getConfigMcpServerNames(projectPath: string): Promise<Set<string>> {
         const response = await this.codexClient.configRead({ includeLayers: true, cwd: projectPath });
-        const mcpServers = response?.config?.["mcp_servers"];
-        if (!mcpServers || typeof mcpServers !== "object" || Array.isArray(mcpServers)) {
+        const effectiveMcpServers = response?.config?.["mcp_servers"];
+        const configLayers = response?.layers ?? [];
+        const layerMcpServers = configLayers.map(layer => {
+            return isJsonObject(layer.config) ? layer.config["mcp_servers"] : undefined;
+        });
+        const configuredMcpServers = [effectiveMcpServers, ...layerMcpServers].filter(isJsonObject);
+        if (configuredMcpServers.length === 0) {
             return new Set();
         }
-        return new Set(Object.keys(mcpServers));
+        return new Set(configuredMcpServers.flatMap(server => Object.keys(server)));
     }
 
     getModelProvider(): string | null {
