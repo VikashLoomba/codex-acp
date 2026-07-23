@@ -1475,7 +1475,7 @@ export class CodexAcpServer {
             case "contextCompaction":
                 return [createCompletedContextCompactionUpdate(item)];
             case "plan":
-                return [this.createPlanUpdate(item)];
+                return [this.createPlanMessageUpdate(item)];
         }
     }
 
@@ -1526,16 +1526,14 @@ export class CodexAcpServer {
         };
     }
 
-    private createPlanUpdate(
+    private createPlanMessageUpdate(
         item: ThreadItem & { type: "plan" }
     ): UpdateSessionEvent {
-        return {
-            sessionUpdate: "agent_message_chunk",
-            content: {
-                type: "text",
-                text: `Plan:\n${item.text}`,
-            },
-        };
+        return createAgentTextMessageChunk(
+            item.text,
+            item.id,
+            createCodexMessagePhaseMeta("final_answer"),
+        );
     }
 
     private userInputToContentBlocks(input: UserInput): acp.ContentBlock[] {

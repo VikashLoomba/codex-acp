@@ -3442,6 +3442,7 @@ describe('ACP server test', { timeout: 40_000 }, () => {
                 secondary: null,
                 credits: null,
                 individualLimit: null,
+                spendControlReached: null,
                 planType: null,
                 rateLimitReachedType: null,
             }
@@ -3456,6 +3457,7 @@ describe('ACP server test', { timeout: 40_000 }, () => {
                 secondary: null,
                 credits: null,
                 individualLimit: null,
+                spendControlReached: null,
                 planType: null,
                 rateLimitReachedType: null,
             }

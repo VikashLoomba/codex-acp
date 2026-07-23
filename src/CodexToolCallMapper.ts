@@ -395,7 +395,7 @@ export function createWebSearchStartUpdate(
         kind: "search",
         title: formatWebSearchTitle(item),
         status: "in_progress",
-        rawInput: item,
+        rawInput: createWebSearchRawInput(item),
     };
 }
 
@@ -407,7 +407,16 @@ export function createWebSearchCompleteUpdate(
         toolCallId: item.id,
         title: formatWebSearchTitle(item),
         status: "completed",
-        rawInput: item,
+        rawInput: createWebSearchRawInput(item),
+    };
+}
+
+function createWebSearchRawInput(item: WebSearchItem): Record<string, JsonValue> {
+    return {
+        type: item.type,
+        id: item.id,
+        query: item.query,
+        action: item.action,
     };
 }
 
